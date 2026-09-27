@@ -123,13 +123,13 @@ _ownership_rule("V-270703", "st_gid")
 
 
 # ---- systemd journal (V-270757, V-270761..764) ----
-# DISA's tmpfiles drop-in is named zzz-...; systemd-tmpfiles applies the entry
-# from the lexically EARLIEST file when paths collide, so systemd's own
-# systemd.conf (2755) wins and the setting silently reverts at boot. Ours is
-# named 00-... so it actually takes precedence.
+# The drop-in must sort AFTER systemd.conf: systemd-tmpfiles (255) runs every
+# z line for a path in filename order, so the last one wins. Verified on a
+# 24.04 VM — a 00-... file was applied and then overridden by systemd.conf's
+# 2755 at every boot. Same zzz- naming as DISA's fix text.
 
 JOURNAL_ROOTS = ["/run/log/journal", "/var/log/journal"]
-TMPFILES = Path("/etc/tmpfiles.d/00-lss-stig-journal.conf")
+TMPFILES = Path("/etc/tmpfiles.d/zzz-lss-stig-journal.conf")
 TMPFILES_TEXT = """# lss-stig: systemd journal ownership/permissions (UBTU-24-7000xx)
 z /run/log/journal 0640 root systemd-journal - -
 Z /run/log/journal/%m ~0640 root systemd-journal - -
@@ -152,9 +152,33 @@ def _journal_gid() -> int | None:
         return None
 
 
+# V-270757 (dirs 0640) and V-270762 (files group systemd-journal) conflict:
+# journald gets the group from the setgid bit on the journal dirs, and 0640
+# clears it, so every file journald creates afterwards (each rotation, each
+# new user journal) is root:root. Found on a 24.04 VM after one reboot.
+# Running journald with Group=systemd-journal gives new files the right group
+# without setgid; its root UID and capabilities are unchanged.
+JOURNALD_DROPIN = Path("/etc/systemd/system/systemd-journald.service.d/zz-lss-stig-group.conf")
+JOURNALD_DROPIN_TEXT = """# lss-stig: journal files group-owned by systemd-journal (V-270762) while the
+# journal dirs are 0640 without setgid (V-270757)
+[Service]
+Group=systemd-journal
+"""
+
+
+def _journald_group() -> list[RollbackEntry]:
+    out = keyval.write_file(JOURNALD_DROPIN, JOURNALD_DROPIN_TEXT)
+    if out:
+        systemd.run("daemon-reload")
+        systemd.run("restart", "systemd-journald.service")
+        for e in out:
+            e.undo += [["systemctl", "daemon-reload"], ["systemctl", "restart", "systemd-journald.service"]]
+    return out
+
+
 def _journal_rule(vuln_id: str, kind: str, bad_fn, fix_fn, what: str, impact: str | None = None) -> None:
     def fix(bad) -> list[RollbackEntry]:
-        return keyval.write_file(TMPFILES, TMPFILES_TEXT) + fix_fn(bad)
+        return keyval.write_file(TMPFILES, TMPFILES_TEXT) + _journald_group() + fix_fn(bad)
 
     _scan_rule(vuln_id, lambda: _journal(kind), bad_fn, fix, what, impact=impact, na="no journal directory")
 

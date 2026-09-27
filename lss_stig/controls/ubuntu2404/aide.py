@@ -19,8 +19,14 @@ AUDIT_TOOL_LINES = [f"/sbin/{t} p+i+n+u+g+s+b+acl+xattrs+sha512"
                     for t in ("auditctl", "auditd", "ausearch", "aureport", "autrace", "augenrules")]
 
 
+# aide-common (aide.conf, the cron job, /etc/default/aide) is only a
+# Recommends of aide, so --no-install-recommends must name it explicitly;
+# without it aide has no configuration and V-270650/V-270831 can't be fixed.
+AIDE_PKGS = ("aide", "aide-common")
+
+
 def _need_aide() -> CheckResult | None:
-    if not pkg.is_installed("aide"):
+    if not all(pkg.is_installed(p) for p in AIDE_PKGS):
         return CheckResult("fail", "aide not installed (see V-270649)")
     return None
 
@@ -28,12 +34,17 @@ def _need_aide() -> CheckResult | None:
 # ---- V-270649 — AIDE installed ----
 
 def _check_installed() -> CheckResult:
-    ok = pkg.is_installed("aide")
-    return CheckResult("pass" if ok else "fail", "" if ok else "aide not installed",
-                       f"dpkg-query aide: {'installed' if ok else 'not installed'}")
+    state = {p: pkg.is_installed(p) for p in AIDE_PKGS}
+    missing = [p for p, ok in state.items() if not ok]
+    ev = "\n".join(f"dpkg-query {p}: {'installed' if ok else 'not installed'}" for p, ok in state.items())
+    if not state["aide"]:
+        return CheckResult("fail", "aide not installed", ev)
+    if missing:
+        return CheckResult("fail", "aide-common not installed — aide has no configuration", ev)
+    return CheckResult("pass", "", ev)
 
 
-register(B, Control("V-270649", _check_installed, lambda: pkg.install("aide")))
+register(B, Control("V-270649", _check_installed, lambda: pkg.install(*AIDE_PKGS)))
 
 
 # ---- V-270650 — AIDE baseline initialized ----
@@ -124,7 +135,7 @@ def _check_audit_tools() -> CheckResult:
 
 def _fix_audit_tools() -> list[RollbackEntry]:
     if not AIDE_CONF.exists():
-        raise RuntimeError("aide not installed — fix V-270649 first")
+        raise RuntimeError(f"{AIDE_CONF} missing — fix V-270649 first")
 
     def add(text: str) -> str:
         have = {" ".join(l.split()) for l in text.splitlines()}

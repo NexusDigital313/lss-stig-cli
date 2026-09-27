@@ -1,7 +1,7 @@
 """Rollback journal — records every change made during hardening so it can be undone.
 
 Writes are atomic: temp file + fsync + rename. Backups of modified files are
-stored under JOURNAL_DIR/backups/<run_id>/<sanitized-path>.
+stored under BACKUPS_DIR/<run_id>/<sanitized-path>.
 """
 
 from __future__ import annotations
@@ -17,7 +17,10 @@ from pathlib import Path
 from lss_stig.lib.registry import RollbackEntry  # noqa: F401
 
 JOURNAL_DIR = Path("/var/log/lss-stig/journal")
-BACKUPS_DIR = JOURNAL_DIR / "backups"
+# Backups keep the original file's mode (rollback restores it from them), so
+# they must live outside /var/log: a 0644 copy there is itself a V-270756
+# finding, which a real 24.04 run produced. State belongs in /var/lib anyway.
+BACKUPS_DIR = Path("/var/lib/lss-stig/backups")
 
 # Module-level "current run" context. harden.py calls set_current_run_id()
 # before invoking any control fix; fixes then call backup_file(path) without
@@ -65,8 +68,9 @@ def backup_file(path: str, run_id: str | None = None) -> str:
     src = Path(path)
     if not src.exists() or not src.is_file():
         return ""
+    BACKUPS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     dest_dir = BACKUPS_DIR / rid
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_dir.mkdir(mode=0o700, exist_ok=True)
     base = _sanitize_path(path)
     # Each call must produce a UNIQUE backup. When several controls modify
     # the same file in one run, a single deterministic dest would let later

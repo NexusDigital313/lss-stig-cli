@@ -88,37 +88,74 @@ def is_installed(pkg: str) -> bool:
     return False
 
 
-def install(pkg: str) -> list[RollbackEntry]:
-    """Install `pkg`. Returns a RollbackEntry whose undo purges the package.
+_lists_refreshed = False
+
+
+def _no_candidate(pkgs: list[str]) -> list[str]:
+    """Packages apt has no installation candidate for in its current lists."""
+    r = subprocess.run(["apt-cache", "policy", *pkgs], capture_output=True, text=True, env=_build_env())
+    have = set()
+    name = None
+    for line in r.stdout.splitlines():
+        if not line.startswith(" ") and line.endswith(":"):
+            name = line[:-1]
+        elif name and line.strip().startswith("Candidate:") and line.split(":", 1)[1].strip() != "(none)":
+            have.add(name)
+    return [p for p in pkgs if p not in have]
+
+
+def _ensure_candidates(pkgs: list[str]) -> None:
+    # Package lists can lag the sources (seen on a 24.04 cloud image: universe
+    # enabled in ubuntu.sources but never fetched, so vlock "couldn't be
+    # located"). Refresh once per run, then fail with the likely cause.
+    global _lists_refreshed
+    if not (missing := _no_candidate(pkgs)):
+        return
+    if not _lists_refreshed:
+        _run(["apt-get", *_APT_OPTS, "update"])
+        _lists_refreshed = True
+        if not (missing := _no_candidate(pkgs)):
+            return
+    raise RuntimeError(f"apt has no installation candidate for {' '.join(missing)} even after "
+                       "`apt-get update` — check the host's apt sources (on Ubuntu these packages "
+                       "may need the universe component enabled)")
+
+
+def install(*pkgs: str) -> list[RollbackEntry]:
+    """Install the packages not already present, in one transaction. Returns a
+    RollbackEntry whose undo purges exactly those packages.
 
     Uses `purge` (not `remove`) on the undo path because lss-stig just installed
-    the package — its config files were created by the package install,
+    the packages — their config files were created by the package install,
     not by the customer, so rollback should clean them up rather than
     leave litter under /etc/<pkg>/.
 
-    No-op if already installed, or if the distro family is neither Debian
+    No-op if all are installed, or if the distro family is neither Debian
     nor RHEL (returns an empty list so the caller can surface a no-op).
 
-    NOTE: rollback removes only the named package, not the dependencies
+    NOTE: rollback removes only the named packages, not the dependencies
     that were pulled in transitively. On Debian, those dependencies remain
     marked as manually-installed (because the install was non-interactive)
     and won't be `apt autoremove`d unless the operator runs that explicitly.
     A snapshot-and-diff dpkg approach is planned for a future release.
     """
-    if is_installed(pkg):
+    todo = [p for p in pkgs if not is_installed(p)]
+    if not todo:
         return []
     if distro.is_debian_family():
+        _ensure_candidates(todo)
         # No recommends: a STIG box should get exactly what the rule asks for
-        # (aide recommends an MTA, which would drag postfix onto the host).
-        cmd = ["apt-get", *_APT_OPTS, "install", "-y", "--no-install-recommends", pkg]
-        undo = [["apt-get", "purge", "-y", pkg]]
+        # (aide-common recommends a mailer, which would drag postfix onto the
+        # host). Callers name any recommended package the rule actually needs.
+        cmd = ["apt-get", *_APT_OPTS, "install", "-y", "--no-install-recommends", *todo]
+        undo = [["apt-get", "purge", "-y", *todo]]
     elif distro.is_rhel_family():
-        cmd = ["dnf", "install", "-y", pkg]
-        undo = [["dnf", "remove", "-y", pkg]]
+        cmd = ["dnf", "install", "-y", *todo]
+        undo = [["dnf", "remove", "-y", *todo]]
     else:
         return []
     _run(cmd)
-    return [RollbackEntry(action=f"installed package {pkg}", undo=undo)]
+    return [RollbackEntry(action=f"installed package {' '.join(todo)}", undo=undo)]
 
 
 def remove(pkg: str) -> list[RollbackEntry]:

@@ -5,7 +5,7 @@ writes a **STIG Viewer 3 checklist (`.cklb`)** from every audit.
 
 It is the STIG edition of The Linux Security Suite. LSS targets the CIS Benchmark;
 lss-stig targets DISA STIGs — separate package (`lss_stig`), command (`lss-stig`),
-state (`/var/log/lss-stig/`) and SSH drop-in (`00-lss-stig.conf`), so both can be
+state (`/var/log/lss-stig/`, backups in `/var/lib/lss-stig/`) and SSH drop-in (`00-lss-stig.conf`), so both can be
 installed on the same host without touching each other.
 
 ## Supported benchmarks
@@ -81,9 +81,10 @@ text that would damage the host:
 | V-270701 | `chmod 755` on writable commands | would drop setuid/setgid — only `go-w` is removed |
 | V-270678 | fix sets `idle-delay=900`, `lock-delay=600` | fails DISA's own check (≤600, 0) — the check's values are used |
 | V-270679, V-274872, V-274873 | lock the GNOME setting | GNOME defaults are automount on / autorun allowed / removal does nothing; locking alone freezes them — the secure value is set, then locked |
-| V-270757…764 | tmpfiles drop-in `zzz-…` | systemd-tmpfiles applies the lexically *earliest* file, so systemd's own `2755` wins at boot — ours is `00-…` |
 | V-270655 | `ufw enable` | would lock out a remote admin — SSH ports get `ufw limit` first |
 | V-270758 | `chmod 740 journalctl` | reverted by the next systemd update — held with `dpkg-statoverride` |
+| V-270757 vs V-270762 | journal dirs `0640` / journal files group `systemd-journal` | `0640` clears the setgid bit journald relies on, so every rotated file becomes `root:root` — journald also gets `Group=systemd-journal` |
+| V-270649 | install `aide` | `aide.conf` is in `aide-common`, only a *Recommends* — both are installed, without the mailer aide-common recommends |
 | V-270651 vs V-270831 | aide.conf must equal the package default / must add audit-tool lines | can't both hold — reported as *review* when that is the only difference |
 | V-270731 | "less than 60 is a finding" | typo for a 60-day maximum — set to exactly 60, which passes either reading |
 | V-274868, V-270707, V-274869 | remove NOPASSWD / `!authenticate` / `ALL ALL` | check-only: cloud images' default user has NOPASSWD and no password, so removing it deletes the only admin path |
