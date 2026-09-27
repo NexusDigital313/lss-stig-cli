@@ -33,7 +33,7 @@ def _check_installed() -> CheckResult:
                        f"dpkg-query aide: {'installed' if ok else 'not installed'}")
 
 
-register(B, Control("V-270649", _check_installed, lambda: pkg.install("aide") + pkg.install("aide-common")))
+register(B, Control("V-270649", _check_installed, lambda: pkg.install("aide")))
 
 
 # ---- V-270650 — AIDE baseline initialized ----

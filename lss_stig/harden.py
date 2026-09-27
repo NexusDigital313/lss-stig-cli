@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-from lss_stig.lib import distro, journal, syslog
+from lss_stig.lib import distro, journal, pkg, syslog
 from lss_stig.lib.output import DIM, GREEN, RESET, YELLOW, banner, err, header, info, result_line, warn
 from lss_stig.lib.registry import Benchmark, get_control, select_rules
 from lss_stig.audit import evaluate
@@ -47,6 +47,11 @@ def run_harden(args, bench: Benchmark) -> int:
         for r, text in impacts:
             warn(f"    {r.vuln_id}  {text}")
         warn("Leave any out with --skip <ID>, or preview with --dry-run.")
+
+    if not dry_run and (bad := pkg.dpkg_interrupted()):
+        warn("dpkg reports an interrupted install — package fixes will be refused until you run:")
+        warn("    sudo dpkg --configure -a")
+        warn(f"    ({bad.splitlines()[0]})")
 
     run_id = journal.new_run_id()
     if not dry_run:

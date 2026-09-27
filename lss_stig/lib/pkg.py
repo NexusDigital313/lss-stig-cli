@@ -42,7 +42,29 @@ def _build_env() -> dict[str, str]:
     }
 
 
-_PKG_TIMEOUT = 300  # apt-get / dnf install or remove
+# Package operations are never timed out: killing apt mid-dpkg leaves the
+# package database "interrupted" and every later install fails until someone
+# runs `dpkg --configure -a` (found on a real 24.04 VM, where aide-common's
+# postinst outran a 300 s timeout). Instead apt waits up to 10 min for the
+# dpkg lock — a freshly booted cloud host is usually mid unattended-upgrade.
+_APT_OPTS = ["-o", "DPkg::Lock::Timeout=600"]
+
+
+def dpkg_interrupted() -> str:
+    """Non-empty (dpkg --audit output) if the package database needs repair."""
+    if not distro.is_debian_family():
+        return ""
+    r = subprocess.run(["dpkg", "--audit"], capture_output=True, text=True)
+    return r.stdout.strip()
+
+
+def _run(cmd: list[str]) -> None:
+    if distro.is_debian_family() and (bad := dpkg_interrupted()):
+        raise RuntimeError("dpkg is in an interrupted state — run `sudo dpkg --configure -a` first "
+                           f"({bad.splitlines()[0]})")
+    r = subprocess.run(cmd, capture_output=True, text=True, env=_build_env())
+    if r.returncode != 0:
+        raise RuntimeError(f"{' '.join(cmd)} failed: {(r.stderr or r.stdout).strip()[-400:]}")
 
 
 def is_installed(pkg: str) -> bool:
@@ -88,22 +110,14 @@ def install(pkg: str) -> list[RollbackEntry]:
     if distro.is_debian_family():
         # No recommends: a STIG box should get exactly what the rule asks for
         # (aide recommends an MTA, which would drag postfix onto the host).
-        cmd = ["apt-get", "install", "-y", "--no-install-recommends", pkg]
+        cmd = ["apt-get", *_APT_OPTS, "install", "-y", "--no-install-recommends", pkg]
         undo = [["apt-get", "purge", "-y", pkg]]
     elif distro.is_rhel_family():
         cmd = ["dnf", "install", "-y", pkg]
         undo = [["dnf", "remove", "-y", pkg]]
     else:
         return []
-    try:
-        r = subprocess.run(
-            cmd, capture_output=True, text=True,
-            env=_build_env(), timeout=_PKG_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"{' '.join(cmd)} timed out after {_PKG_TIMEOUT}s")
-    if r.returncode != 0:
-        raise RuntimeError(f"{' '.join(cmd)} failed: {r.stderr.strip()}")
+    _run(cmd)
     return [RollbackEntry(action=f"installed package {pkg}", undo=undo)]
 
 
@@ -115,20 +129,12 @@ def remove(pkg: str) -> list[RollbackEntry]:
     if not is_installed(pkg):
         return []
     if distro.is_debian_family():
-        cmd = ["apt-get", "remove", "-y", pkg]
+        cmd = ["apt-get", *_APT_OPTS, "remove", "-y", pkg]
         undo = [["apt-get", "install", "-y", pkg]]
     elif distro.is_rhel_family():
         cmd = ["dnf", "remove", "-y", pkg]
         undo = [["dnf", "install", "-y", pkg]]
     else:
         return []
-    try:
-        r = subprocess.run(
-            cmd, capture_output=True, text=True,
-            env=_build_env(), timeout=_PKG_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"{' '.join(cmd)} timed out after {_PKG_TIMEOUT}s")
-    if r.returncode != 0:
-        raise RuntimeError(f"{' '.join(cmd)} failed: {r.stderr.strip()}")
+    _run(cmd)
     return [RollbackEntry(action=f"removed package {pkg}", undo=undo)]
