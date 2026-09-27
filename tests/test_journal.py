@@ -45,6 +45,32 @@ class JournalRollbackTests(unittest.TestCase):
         self.assertEqual(rollback.run_rollback(args), 0)
         self.assertEqual(self.target.read_text(), "original\n")
 
+    def test_last_moves_to_previous_run(self):
+        journal.set_current_run_id(None)
+        self.target.write_text("run1\n")
+        journal.write_run("20260101T000000Z-aaaaaaaa", {
+            "V-1": [{"action": "a", "undo": [["true"]], "path": "", "backup": ""}]})
+        journal.write_run("20260102T000000Z-bbbbbbbb", {
+            "V-2": [{"action": "b", "undo": [["true"]], "path": "", "backup": ""}]})
+        last = SimpleNamespace(last=True, run_id=None, rule=None)
+        with mock.patch.object(rollback, "info") as info:
+            rollback.run_rollback(last)
+            rollback.run_rollback(last)
+            self.assertEqual(rollback.run_rollback(last), 0)
+        said = " ".join(str(c) for c in info.call_args_list)
+        self.assertIn("bbbbbbbb", said)
+        self.assertIn("aaaaaaaa", said)
+        self.assertIn("already rolled back", said)
+        self.assertEqual(journal.read_run("20260101T000000Z-aaaaaaaa")["rolled_back"], ["V-1"])
+
+    def test_failed_undo_stays_pending(self):
+        journal.write_run("20260101T000000Z-cccccccc", {
+            "V-1": [{"action": "a", "undo": [["false"]], "path": "", "backup": ""}],
+            "V-2": [{"action": "b", "undo": [["true"]], "path": "", "backup": ""}]})
+        rollback.run_rollback(SimpleNamespace(last=True, run_id=None, rule=None))
+        data = journal.read_run("20260101T000000Z-cccccccc")
+        self.assertEqual(list(journal.pending_controls(data)), ["V-1"])
+
     def test_rejects_malformed_run_id(self):
         args = SimpleNamespace(last=False, run_id="../../etc/passwd", rule=None)
         self.assertEqual(rollback.run_rollback(args), 1)

@@ -125,6 +125,22 @@ def read_run(run_id: str | None = None) -> dict | None:
     return json.loads(path.read_text())
 
 
+def mark_rolled_back(run_id: str, control_ids: list[str]) -> None:
+    """Record rules of a run as undone, so `rollback --last` moves on to the
+    previous run instead of replaying this one over the restored state."""
+    data = read_run(run_id)
+    if data is None or not control_ids:
+        return
+    data["rolled_back"] = sorted(set(data.get("rolled_back", [])) | set(control_ids))
+    _atomic_write(JOURNAL_DIR / f"{run_id}.json", json.dumps(data, indent=2))
+
+
+def pending_controls(data: dict) -> dict:
+    """The run's controls that have not been rolled back yet."""
+    done = set(data.get("rolled_back", []))
+    return {k: v for k, v in data.get("controls", {}).items() if k not in done}
+
+
 def list_runs() -> list[str]:
     """List all run IDs, newest first."""
     if not JOURNAL_DIR.exists():

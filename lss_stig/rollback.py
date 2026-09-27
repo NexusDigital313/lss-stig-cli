@@ -62,23 +62,20 @@ def _run_undo(control_id: str, argv: list[str]) -> tuple[bool, str]:
 def run_rollback(args) -> int:
     """Undo a previous harden run."""
     run_id = None
-    if args.last:
-        runs = journal.list_runs()
-        if not runs:
-            err("no harden runs found in journal")
-            return 1
-        run_id = runs[0]
-    elif args.run_id:
+    if args.run_id:
         if not re.fullmatch(r"[0-9TZ]+-[0-9a-f]{8}", args.run_id):
             err(f"malformed run id: {args.run_id}")
             return 1
         run_id = args.run_id
-    else:  # --rule: undo one rule from the most recent run
+    else:  # --last, or --rule: the most recent run not yet fully rolled back
         runs = journal.list_runs()
         if not runs:
             err("no harden runs found in journal")
             return 1
-        run_id = runs[0]
+        run_id = next((r for r in runs if (d := journal.read_run(r)) and journal.pending_controls(d)), None)
+        if run_id is None:
+            info("every harden run in the journal is already rolled back")
+            return 0
 
     run_data = journal.read_run(run_id)
     if not run_data:
@@ -91,12 +88,16 @@ def run_rollback(args) -> int:
         f"target={'rule:' + args.rule if args.rule else 'all'}"
     )
 
-    controls = run_data.get("controls", {})
+    controls = journal.pending_controls(run_data)
+    if not controls:
+        info(f"run {run_data['run_id']} is already rolled back")
+        return 0
 
     if args.rule:
         args.rule = args.rule.upper()
         if args.rule not in controls:
-            err(f"rule {args.rule} not found in run {run_data['run_id']}")
+            done = args.rule in run_data.get("controls", {})
+            err(f"rule {args.rule} {'already rolled back in' if done else 'not found in'} run {run_data['run_id']}")
             return 1
         controls = {args.rule: controls[args.rule]}
 
@@ -110,7 +111,9 @@ def run_rollback(args) -> int:
     # the file before later controls' "restore from backup" recreate it
     # with their stale post-edit state — leaving the file partially
     # hardened. See tests/test_journal.py for the multi-control case.
+    undone: list[str] = []
     for control_id, entries in reversed(list(controls.items())):
+        errors_before = errors
         for entry in reversed(entries):  # reverse order for safe undo
             action = entry.get("action", "")
             backup = entry.get("backup", "") or ""
@@ -154,6 +157,11 @@ def run_rollback(args) -> int:
             # while the live daemon keeps enforcing the old rules.
             if path.startswith("/etc/ssh"):
                 sshd_touched = True
+        if errors == errors_before:
+            undone.append(control_id)
+
+    # Rules whose undo failed stay pending, so a retry redoes only those.
+    journal.mark_rolled_back(run_data["run_id"], undone)
 
     if sshd_touched:
         if sshd.reload():
