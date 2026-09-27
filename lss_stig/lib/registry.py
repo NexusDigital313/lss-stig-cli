@@ -147,7 +147,7 @@ def get_control(benchmark: str, vuln_id: str) -> Control | None:
 
 
 def select_rules(bench: Benchmark, ids: list[str] | None = None,
-                 categories: list[str] | None = None) -> list[Rule]:
+                 categories: list[str] | None = None, skip: list[str] | None = None) -> list[Rule]:
     """Filter rules by any ID form (V-ID, SV rule ID, or UBTU STIG ID) and/or
     category ("I", "II", "III"). Raises ValueError on an unknown ID so a typo
     never silently audits nothing."""
@@ -169,4 +169,7 @@ def select_rules(bench: Benchmark, ids: list[str] | None = None,
             picked.append(r)
         keep = {r.vuln_id for r in picked}
         rules = [r for r in rules if r.vuln_id in keep]
+    if skip:
+        drop = {r.vuln_id for r in select_rules(bench, skip)}
+        rules = [r for r in rules if r.vuln_id not in drop]
     return rules

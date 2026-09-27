@@ -37,7 +37,7 @@ def run_harden(args, bench: Benchmark) -> int:
     host = distro.detect()
     banner(f"{bench.label} · {'dry run — no changes' if dry_run else 'hardening'} · {host.name}")
 
-    rules = [r for r in select_rules(bench, args.rule, args.cat)
+    rules = [r for r in select_rules(bench, args.rule, args.cat, args.skip)
              if (c := get_control(bench.key, r.vuln_id)) is not None and c.fix is not None]
 
     impacts = [(r, get_control(bench.key, r.vuln_id).impact) for r in rules
@@ -46,7 +46,7 @@ def run_harden(args, bench: Benchmark) -> int:
         warn("These fixes can take away something in use on this host:")
         for r, text in impacts:
             warn(f"    {r.vuln_id}  {text}")
-        warn("Exclude with --rule, or preview with --dry-run.")
+        warn("Leave any out with --skip <ID>, or preview with --dry-run.")
 
     run_id = journal.new_run_id()
     if not dry_run:

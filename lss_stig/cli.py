@@ -14,6 +14,8 @@ def _rule_args(p: argparse.ArgumentParser) -> None:
                    help="limit to a rule (V-ID, UBTU-24-xxxxxx or SV rule ID); repeatable")
     p.add_argument("--cat", metavar="I|II|III", action="append", choices=["I", "II", "III"],
                    help="limit to a severity category; repeatable")
+    p.add_argument("--skip", metavar="ID", action="append",
+                   help="leave out a rule (any ID form); repeatable")
 
 
 def build_parser() -> argparse.ArgumentParser:

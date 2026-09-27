@@ -30,7 +30,7 @@ def evaluate(bench: Benchmark, rule) -> CheckResult:
 
 
 def run_audit(args, bench: Benchmark) -> int:
-    rules = select_rules(bench, args.rule, args.cat)
+    rules = select_rules(bench, args.rule, args.cat, args.skip)
     json_mode = args.json
 
     if not json_mode:

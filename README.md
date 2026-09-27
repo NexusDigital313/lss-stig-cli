@@ -12,7 +12,7 @@ installed on the same host without touching each other.
 
 | Benchmark | Release | Rules | Automated |
 |---|---|---|---|
-| Canonical Ubuntu 24.04 LTS STIG | V1R6 (01 Jul 2026) | 194 (16 CAT I · 161 CAT II · 17 CAT III) | all 16 CAT I |
+| Canonical Ubuntu 24.04 LTS STIG | V1R6 (01 Jul 2026) | 194 (16 CAT I · 161 CAT II · 17 CAT III) | all CAT I + CAT II (177) |
 
 The rule catalog is imported verbatim from DISA's XCCDF, so IDs, severities and
 check/fix text match the published STIG exactly. Rules without an automated check
@@ -35,6 +35,7 @@ sudo lss-stig audit --cat I             # CAT I only
 sudo lss-stig audit --rule V-270708     # any ID form: V-ID, UBTU-24-xxxxxx, SV-…_rule
 sudo lss-stig harden --dry-run          # what would change
 sudo lss-stig harden --confirm [-i]     # apply (every change journaled)
+sudo lss-stig harden --confirm --skip V-270655   # leave rules out (any ID form)
 sudo lss-stig rollback --last           # undo the last harden run
 sudo lss-stig checklist -o host.cklb    # rebuild a checklist from the last audit
 lss-stig list [--cat I] [--automated]
@@ -68,6 +69,29 @@ looked at) is written to the checklist's *Finding Details*.
   not run, or the profile doesn't read `system-db:local`.
 - **GRUB password (V-270675)** — DISA's fix alone makes GRUB prompt on every boot
   unless normal entries are `--unrestricted`; test a reboot before leaving it.
+
+### Where DISA's own text is wrong or dangerous
+
+lss-stig implements what each rule's **check** verifies, and never applies a fix
+text that would damage the host:
+
+| Rule | DISA text | lss-stig |
+|---|---|---|
+| V-270824 | `chmod -R 755` on command directories | strips setuid from `sudo`, `su`, `passwd` — only the directory's write bits are removed |
+| V-270701 | `chmod 755` on writable commands | would drop setuid/setgid — only `go-w` is removed |
+| V-270678 | fix sets `idle-delay=900`, `lock-delay=600` | fails DISA's own check (≤600, 0) — the check's values are used |
+| V-270679, V-274872, V-274873 | lock the GNOME setting | GNOME defaults are automount on / autorun allowed / removal does nothing; locking alone freezes them — the secure value is set, then locked |
+| V-270757…764 | tmpfiles drop-in `zzz-…` | systemd-tmpfiles applies the lexically *earliest* file, so systemd's own `2755` wins at boot — ours is `00-…` |
+| V-270655 | `ufw enable` | would lock out a remote admin — SSH ports get `ufw limit` first |
+| V-270758 | `chmod 740 journalctl` | reverted by the next systemd update — held with `dpkg-statoverride` |
+| V-270651 vs V-270831 | aide.conf must equal the package default / must add audit-tool lines | can't both hold — reported as *review* when that is the only difference |
+| V-270731 | "less than 60 is a finding" | typo for a 60-day maximum — set to exactly 60, which passes either reading |
+| V-274868, V-270707, V-274869 | remove NOPASSWD / `!authenticate` / `ALL ALL` | check-only: cloud images' default user has NOPASSWD and no password, so removing it deletes the only admin path |
+
+Also checked beyond the letter of the rule: audit rules must be **loaded** (not
+just present in `rules.d`); `-e 2` is compiled but takes effect at next boot so it
+can't lock out rules added later in the same run; existing yescrypt password
+hashes are counted (switching PAM to sha512 only affects passwords set afterwards).
 
 ## New STIG release
 
