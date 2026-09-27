@@ -12,12 +12,26 @@ installed on the same host without touching each other.
 
 | Benchmark | Release | Rules | Automated |
 |---|---|---|---|
-| Canonical Ubuntu 24.04 LTS STIG | V1R6 (01 Jul 2026) | 194 (16 CAT I · 161 CAT II · 17 CAT III) | all CAT I + CAT II (177) |
+| Canonical Ubuntu 24.04 LTS STIG | V1R6 (01 Jul 2026) | 194 (16 CAT I · 161 CAT II · 17 CAT III) | all 194 |
 
 The rule catalog is imported verbatim from DISA's XCCDF, so IDs, severities and
-check/fix text match the published STIG exactly. Rules without an automated check
-still appear in every audit and checklist as **Not Reviewed** — the checklist is
-always complete.
+check/fix text match the published STIG exactly. Every rule has an automated
+check; where the verdict is organizational (who belongs in `sudo`, the PPSM CLSA)
+the evidence is collected and the rule is marked for review.
+
+## Site values
+
+A few rules can only pass against *your* infrastructure. Set them once:
+
+```bash
+sudo lss-stig site time_server=<DOD NTP server> \
+                   audit_remote_server=<audit collector> \
+                   admin_email=<SA/ISSO address>
+lss-stig site                                   # show current values
+```
+
+Until a value is set, the rules that need it (V-270751, V-270658, V-270818/819)
+stay open with the exact command to run — nothing is guessed.
 
 ## Install
 
@@ -87,6 +101,10 @@ text that would damage the host:
 | V-270649 | install `aide` | `aide.conf` is in `aide-common`, only a *Recommends* — both are installed, without the mailer aide-common recommends |
 | V-270651 vs V-270831 | aide.conf must equal the package default / must add audit-tool lines | can't both hold — reported as *review* when that is the only difference |
 | V-270731 | "less than 60 is a finding" | typo for a 60-day maximum — set to exactly 60, which passes either reading |
+| V-270690 | add faillock lines "below pam_unix" | shifts Ubuntu's `success=N` jumps — with pam_sss a good login lands on `pam_deny`. Jumps are recomputed; the tally lives in `/var/lib/faillock` because the default tmpfs dir unlocks everyone at reboot |
+| V-270645 | purge systemd-timesyncd | a host with no time daemon drifts — chrony is installed first; `rc` config remnants count as present, as DISA's `dpkg -l` grep sees them |
+| V-270818 | `space_left_action = email` | with no mail transfer agent that alerts nobody — falls back to an `exec` notifier (syslog alert + wall + mail if possible) |
+| V-270658, V-270819 | `systemctl restart auditd` | Ubuntu refuses it — auditd is reloaded with SIGHUP |
 | V-274868, V-270707, V-274869 | remove NOPASSWD / `!authenticate` / `ALL ALL` | check-only: cloud images' default user has NOPASSWD and no password, so removing it deletes the only admin path |
 
 Also checked beyond the letter of the rule: audit rules must be **loaded** (not
