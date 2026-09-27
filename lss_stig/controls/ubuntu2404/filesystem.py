@@ -559,3 +559,28 @@ def _fix_remote_logging() -> list[RollbackEntry]:
 
 
 register(B, Control("V-270681", _check_remote_logging, _fix_remote_logging))
+
+
+# ---- V-270749 (CAT III) — kernel message buffer restricted ----
+
+def _check_dmesg() -> CheckResult:
+    key = "kernel.dmesg_restrict"
+    ev = sysctl.evidence(key)
+    if sysctl.runtime(key) != "1":
+        return CheckResult("fail", f"{key} = {sysctl.runtime(key)}", ev)
+    if any(v != "1" for _, v in sysctl.assignments(key)):
+        return CheckResult("fail", f"{key} set to 0 in sysctl configuration (applies at next boot)", ev)
+    return CheckResult("pass", "", ev)
+
+
+def _fix_dmesg() -> list[RollbackEntry]:
+    key = "kernel.dmesg_restrict"
+    out: list[RollbackEntry] = []
+    for f in {f for f, v in sysctl.assignments(key) if v != "1" and f.startswith("/etc/")}:
+        out += keyval.edit_file(f, lambda t: "\n".join(
+            ("# " + l + "  # lss-stig: V-270749") if re.match(rf"^\s*-?{re.escape(key)}\s*=", l) else l
+            for l in t.splitlines()) + "\n", f"commented {key} in {f}")
+    return out + sysctl.set_value(key, "1")
+
+
+register(B, Control("V-270749", _check_dmesg, _fix_dmesg))

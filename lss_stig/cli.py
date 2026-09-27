@@ -56,7 +56,37 @@ def build_parser() -> argparse.ArgumentParser:
     ls = sub.add_parser("list", help="list the benchmark's rules and which are automated")
     ls.add_argument("--cat", metavar="I|II|III", action="append", choices=["I", "II", "III"])
     ls.add_argument("--automated", action="store_true", help="only rules with an automated check")
+
+    st = sub.add_parser("site", help="show or set site values (time source, audit collector, admin email)")
+    st.add_argument("assign", nargs="*", metavar="KEY=VALUE", help="e.g. time_server=tick.usno.navy.mil")
     return p
+
+
+def _run_site(args) -> int:
+    from lss_stig.lib import site
+    from lss_stig.lib.output import BOLD, GRAY, RESET, err, info
+    if args.assign:
+        if os.geteuid() != 0:
+            err("setting site values needs root")
+            return 1
+        values = {}
+        for a in args.assign:
+            key, sep, val = a.partition("=")
+            key, val = key.strip(), val.strip()
+            problem = "expected KEY=VALUE" if not sep or not val else site.validate(key, val)
+            if problem:
+                err(f"{a}: {problem}")
+                return 2
+            values[key] = val
+        site.write(values)
+        for k, v in values.items():
+            info(f"{k} = {v}")
+        info("Re-run `sudo lss-stig audit` to see the rules these unblock.")
+        return 0
+    print(f"  {GRAY}{site.SITE_CONF}{RESET}")
+    for key, what in site.KEYS.items():
+        print(f"  {BOLD}{key:<20}{RESET} {site.get(key) or GRAY + '(not set)' + RESET}\n  {GRAY}{'':<20} {what}{RESET}")
+    return 0
 
 
 def _resolve_benchmark(args) -> str:
@@ -110,6 +140,8 @@ def main(argv: list[str] | None = None) -> None:
     if not args.command:
         build_parser().print_help()
         sys.exit(0)
+    if args.command == "site":
+        sys.exit(_run_site(args))
 
     key = _resolve_benchmark(args)
     bench = benchmarks.activate(key)

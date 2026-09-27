@@ -17,6 +17,7 @@ from pathlib import Path
 
 from lss_stig.controls.ubuntu2404 import dod
 from lss_stig.lib import dconf, keyval, pkg
+from lss_stig.lib.ini import set_ini  # noqa: F401  (re-exported for tests)
 from lss_stig.lib.registry import CheckResult, Control, RollbackEntry, register
 
 B = "ubuntu2404_v1r6"
@@ -82,29 +83,6 @@ _dconf_rule("V-274871",
 
 GREETER = Path("/etc/gdm3/greeter.dconf-defaults")
 LOGIN = "org/gnome/login-screen"
-
-
-def set_ini(text: str, section: str, key: str, value: str) -> str:
-    """Set key=value inside [section]: replace an active or commented line in
-    that section, else add it at the section end, else append the section."""
-    lines = text.splitlines()
-    hdr = f"[{section}]"
-    start = next((i for i, l in enumerate(lines) if l.strip() == hdr), None)
-    if start is None:
-        return "\n".join(lines + ["", hdr, f"{key}={value}"]) + "\n"
-    end = next((i for i in range(start + 1, len(lines)) if lines[i].strip().startswith("[")), len(lines))
-    pat = re.compile(rf"^\s*#?\s*{re.escape(key)}\s*=")
-    hits = [i for i in range(start + 1, end) if pat.match(lines[i])]
-    active = [i for i in hits if not lines[i].lstrip().startswith("#")]
-    target = (active or hits or [None])[-1]
-    if target is None:
-        lines.insert(end, f"{key}={value}")
-    else:
-        lines[target] = f"{key}={value}"
-        for i in active:
-            if i != target:
-                lines[i] = "# " + lines[i]
-    return "\n".join(lines) + "\n"
 
 
 def _greeter_value(key: str) -> str | None:

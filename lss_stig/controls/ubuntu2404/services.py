@@ -292,3 +292,39 @@ def _fix_uu() -> list[RollbackEntry]:
 
 
 register(B, Control("V-270773", _check_uu, _fix_uu))
+
+
+# ---- V-270695 (CAT III) — APT never installs unsigned packages ----
+
+APT_CONF_D = Path("/etc/apt/apt.conf.d")
+_UNAUTH = re.compile(r'AllowUnauthenticated\s+"?(true|yes|1)"?', re.I)
+
+
+def _unauth_lines() -> list[tuple[str, int, str]]:
+    files = ([Path("/etc/apt/apt.conf")] if Path("/etc/apt/apt.conf").exists() else []) + \
+        (sorted(f for f in APT_CONF_D.iterdir() if f.is_file()) if APT_CONF_D.is_dir() else [])
+    out = []
+    for f in files:
+        for n, line in enumerate(f.read_text(errors="replace").splitlines(), 1):
+            if not line.lstrip().startswith(("//", "#")) and _UNAUTH.search(line):
+                out.append((str(f), n, line.strip()))
+    return out
+
+
+def _check_apt_signed() -> CheckResult:
+    hits = _unauth_lines()
+    if hits:
+        return CheckResult("fail", f"AllowUnauthenticated enabled in {len(hits)} place(s)",
+                           "\n".join(f"{f}:{n}: {l}" for f, n, l in hits))
+    return CheckResult("pass", "", "no APT configuration allows unauthenticated packages")
+
+
+def _fix_apt_signed() -> list[RollbackEntry]:
+    out: list[RollbackEntry] = []
+    for f in {f for f, _, _ in _unauth_lines()}:
+        out += keyval.edit_file(f, lambda t: _UNAUTH.sub(lambda m: m.group(0).replace(m.group(1), "false"), t),
+                                f"AllowUnauthenticated false in {f}")
+    return out
+
+
+register(B, Control("V-270695", _check_apt_signed, _fix_apt_signed))

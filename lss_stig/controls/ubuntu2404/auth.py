@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import grp
+import os
 import pwd
 import re
 import subprocess
 from datetime import date, timedelta
 from pathlib import Path
 
-from lss_stig.lib import journal, keyval, pkg, sshd
+from lss_stig.lib import ini, journal, keyval, pamstack, pkg, sshd, systemd
 from lss_stig.lib.output import warn
 from lss_stig.lib.registry import CheckResult, Control, RollbackEntry, register
 
@@ -560,3 +561,199 @@ def _check_dod_ca() -> CheckResult:
 
 
 register(B, Control("V-270745", _check_dod_ca))
+
+
+# ======================================================================
+# CAT III
+# ======================================================================
+
+
+LIMITS = Path("/etc/security/limits.conf")
+LIMITS_D = Path("/etc/security/limits.d")
+MAXLOGINS_CONF = LIMITS_D / "lss-stig-maxlogins.conf"
+FAILLOCK_CONF = Path("/etc/security/faillock.conf")
+FAILLOCK_DIR = "/var/lib/faillock"
+
+
+# ---- V-270677 — at most 10 concurrent sessions ----
+
+def _maxlogins() -> list[tuple[str, str, str, int]]:
+    out = []
+    files = ([LIMITS] if LIMITS.exists() else []) + (sorted(LIMITS_D.glob("*.conf")) if LIMITS_D.is_dir() else [])
+    for f in files:
+        for line in f.read_text(errors="replace").splitlines():
+            t = line.split("#", 1)[0].split()
+            if len(t) == 4 and t[2] == "maxlogins" and t[3].isdigit():
+                out.append((str(f), t[0], t[1], int(t[3])))
+    return out
+
+
+def _check_maxlogins() -> CheckResult:
+    found = _maxlogins()
+    ev = "\n".join(f"{f}: {d} {t} maxlogins {v}" for f, d, t, v in found) or "no maxlogins limit"
+    if any(v > 10 for *_, v in found):
+        return CheckResult("fail", "a maxlogins limit above 10 is set", ev)
+    if not any(d == "*" and t in ("hard", "-") for _, d, t, _ in found):
+        return CheckResult("fail", "no `* hard maxlogins 10` for all accounts", ev)
+    return CheckResult("pass", "", ev)
+
+
+def _fix_maxlogins() -> list[RollbackEntry]:
+    out = keyval.write_file(MAXLOGINS_CONF, "# lss-stig: V-270677\n* hard maxlogins 10\n")
+    for f in {f for f, _, _, v in _maxlogins() if v > 10}:
+        out += keyval.edit_file(f, lambda t: "\n".join(
+            f"# {l}  # lss-stig: V-270677" if len(l.split("#", 1)[0].split()) == 4 and l.split()[2] == "maxlogins"
+            and l.split()[3].isdigit() and int(l.split()[3]) > 10 else l for l in t.splitlines()) + "\n",
+            f"commented maxlogins > 10 in {f}")
+    return out
+
+
+register(B, Control("V-270677", _check_maxlogins, _fix_maxlogins,
+                    impact="each account can hold at most 10 simultaneous login sessions"))
+
+
+# ---- V-270690 — lock after 3 failures until an admin releases it ----
+# Two things the fix text doesn't say: (1) inserting lines under pam_unix
+# breaks Ubuntu's success=N jumps — pamstack recomputes them; (2) the
+# default tally dir /var/run/faillock is tmpfs, so a reboot silently
+# unlocks everyone, which defeats unlock_time = 0. The tally is kept in
+# /var/lib/faillock instead.
+
+FAILLOCK_OPTS = {"deny": "3", "fail_interval": "900", "unlock_time": "0", "dir": FAILLOCK_DIR}
+FAILLOCK_FLAGS = ("audit", "silent")
+
+
+def _faillock_flag(text: str, flag: str) -> bool:
+    return any(l.strip() == flag for l in text.splitlines())
+
+
+def _check_faillock() -> CheckResult:
+    auth_mods = pamstack.modules(COMMON_AUTH.read_text(), "auth") if COMMON_AUTH.exists() else []
+    fl = [f"{m.control} {m.module} {m.args}".strip() for m in auth_mods if m.module == "pam_faillock.so"]
+    conf = FAILLOCK_CONF.read_text() if FAILLOCK_CONF.exists() else ""
+    vals = {k: keyval.get(FAILLOCK_CONF, k) for k in FAILLOCK_OPTS}
+    ev = [f"{COMMON_AUTH}: " + ("; ".join(fl) or "no pam_faillock.so")]
+    ev += [f"{FAILLOCK_CONF}: {f} {'set' if _faillock_flag(conf, f) else 'missing'}" for f in FAILLOCK_FLAGS]
+    ev += [f"{FAILLOCK_CONF}: {k} = {v}" for k, v in vals.items()]
+    problems = []
+    if not any("authfail" in x for x in fl):
+        problems.append("pam_faillock authfail not in common-auth")
+    problems += [f"{f} missing" for f in FAILLOCK_FLAGS if not _faillock_flag(conf, f)]
+    deny, interval = _int(vals["deny"]), _int(vals["fail_interval"])
+    if deny is None or not 0 < deny <= 3:
+        problems.append(f"deny = {vals['deny']}")
+    if interval is None or not 0 < interval <= 900:
+        problems.append(f"fail_interval = {vals['fail_interval']}")
+    if vals["unlock_time"] != "0":
+        problems.append(f"unlock_time = {vals['unlock_time']}")
+    if problems:
+        return CheckResult("fail", "; ".join(problems), "\n".join(ev))
+    note = "" if vals["dir"] and not vals["dir"].startswith(("/run", "/var/run")) else \
+        "\nnote: tally dir is on tmpfs — a reboot unlocks every account"
+    return CheckResult("pass", "", "\n".join(ev) + note)
+
+
+def add_faillock(text: str) -> str:
+    """Insert preauth / authfail / authsucc into a Debian-style common-auth."""
+    mods = pamstack.modules(text, "auth")
+    if any(m.module == "pam_faillock.so" for m in mods):
+        return text
+    deny = next((i for i, m in enumerate(mods) if m.module == "pam_deny.so"), None)
+    if deny is None or not mods:
+        raise RuntimeError(f"{COMMON_AUTH} has no pam_deny.so — not a pam-auth-update layout; configure faillock by hand")
+    return pamstack.insert(text, "auth", [
+        (0, "auth\trequisite\t\t\tpam_faillock.so preauth"),
+        (deny, "auth\t[default=die]\t\t\tpam_faillock.so authfail"),
+        (deny, "auth\t[success=1 default=die]\tpam_faillock.so authsucc"),
+    ], retarget_success={deny + 1: 2})
+
+
+def _set_faillock_conf(text: str) -> str:
+    lines = text.splitlines()
+    for flag in FAILLOCK_FLAGS:
+        if not _faillock_flag(text, flag):
+            idx = next((i for i, l in enumerate(lines) if re.match(rf"^\s*#\s*{flag}\s*$", l)), None)
+            if idx is None:
+                lines.append(flag)
+            else:
+                lines[idx] = flag
+    return "\n".join(lines) + "\n"
+
+
+def _fix_faillock() -> list[RollbackEntry]:
+    os.makedirs(FAILLOCK_DIR, mode=0o755, exist_ok=True)
+    out = keyval.edit_file(FAILLOCK_CONF, _set_faillock_conf, f"enabled audit/silent in {FAILLOCK_CONF}") \
+        if FAILLOCK_CONF.exists() else keyval.write_file(FAILLOCK_CONF, "audit\nsilent\n")
+    for k, v in FAILLOCK_OPTS.items():
+        out += keyval.set_value(FAILLOCK_CONF, k, v, fmt=f"{k} = {v}")
+    return out + keyval.edit_file(COMMON_AUTH, add_faillock, f"added pam_faillock to {COMMON_AUTH}")
+
+
+register(B, Control("V-270690", _check_faillock, _fix_faillock,
+                    impact="3 failed password logins in 15 min lock an account until an admin runs "
+                           "`faillock --user NAME --reset` (root is exempt; SSH keys are unaffected)"))
+
+
+# ---- V-270706 — 4 s delay after a failed logon ----
+
+def _faildelay() -> tuple[str, int | None]:
+    for m in (pamstack.modules(COMMON_AUTH.read_text(), "auth") if COMMON_AUTH.exists() else []):
+        if m.module == "pam_faildelay.so":
+            d = re.search(r"\bdelay=(\d+)", m.args)
+            return f"auth {m.control} pam_faildelay.so {m.args}", int(d.group(1)) if d else None
+    return "", None
+
+
+def _check_faildelay() -> CheckResult:
+    line, delay = _faildelay()
+    ev = f"{COMMON_AUTH}: {line or 'no pam_faildelay.so'}"
+    if delay is None or delay < 4000000:
+        return CheckResult("fail", f"delay={delay}" if line else "pam_faildelay not in common-auth", ev)
+    return CheckResult("pass", "", ev)
+
+
+def _set_faildelay(text: str) -> str:
+    if any(m.module == "pam_faildelay.so" for m in pamstack.modules(text, "auth")):
+        return re.sub(r"(pam_faildelay\.so.*?)\bdelay=\d+", r"\g<1>delay=4000000", text)
+    return pamstack.insert(text, "auth", [(0, "auth\trequired\t\t\tpam_faildelay.so delay=4000000")])
+
+
+register(B, Control("V-270706", _check_faildelay,
+                    lambda: keyval.edit_file(COMMON_AUTH, _set_faildelay, f"pam_faildelay delay=4000000 in {COMMON_AUTH}")))
+
+
+# ---- V-270734 — cached (offline) credentials expire after 1 day ----
+
+SSSD_CONFD = Path("/etc/sssd/conf.d")
+
+
+def _smartcard_in_use() -> bool:
+    if _pkcs11_in_auth():
+        return True
+    if SSSD_CONF.exists():
+        return (ini.get(SSSD_CONF.read_text(), "pam", "pam_cert_auth") or "").lower() == "true"
+    return False
+
+
+def _check_offline_creds() -> CheckResult:
+    if not _smartcard_in_use():
+        return CheckResult("na", "smart card authentication not in use")
+    files = [SSSD_CONF] + (sorted(f for f in SSSD_CONFD.glob("*.conf") if not f.name.startswith(".")) if SSSD_CONFD.is_dir() else [])
+    vals = [(str(f), ini.get(f.read_text(), "pam", "offline_credentials_expiration")) for f in files if f.exists()]
+    set_ = [(f, v) for f, v in vals if v is not None]
+    ev = "\n".join(f"{f}: [pam] offline_credentials_expiration = {v}" for f, v in set_) or "offline_credentials_expiration not set"
+    if not set_:
+        return CheckResult("fail", "offline_credentials_expiration not set", ev)
+    if any(v != "1" for _, v in set_):
+        return CheckResult("fail", "offline_credentials_expiration is not 1 (or conflicting)", ev)
+    return CheckResult("pass", "", ev)
+
+
+def _fix_offline_creds() -> list[RollbackEntry]:
+    out = keyval.edit_file(SSSD_CONF, lambda t: ini.set_ini(t, "pam", "offline_credentials_expiration", "1"),
+                           f"[pam] offline_credentials_expiration = 1 in {SSSD_CONF}")
+    systemd.run("restart", "sssd.service")
+    return out + [RollbackEntry(action="restarted sssd", undo=[["systemctl", "restart", "sssd.service"]])]
+
+
+register(B, Control("V-270734", _check_offline_creds, _fix_offline_creds))

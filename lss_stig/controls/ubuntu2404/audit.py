@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
-from lss_stig.lib import auditrules, journal, keyval, perms, pkg, systemd
+from lss_stig.lib import auditrules, journal, keyval, perms, pkg, site, systemd
 from lss_stig.lib.registry import CheckResult, Control, RollbackEntry, register
 
 B = "ubuntu2404_v1r6"
@@ -348,3 +350,229 @@ _file_rule("V-270822", _audit_tools, lambda st: st.st_uid != 0,
 _file_rule("V-270823", _audit_tools, lambda st: st.st_gid != 0,
            lambda b: _fix_tools(b, lambda x: perms.chown_to(x, gid=0, label="audit tool")),
            "audit tool(s) not group-owned by root", "audit tools not installed")
+
+
+# ======================================================================
+# CAT III — audit storage, offload, alerting
+# ======================================================================
+
+AU_REMOTE = Path("/etc/audit/plugins.d/au-remote.conf")
+AUDISP_REMOTE = Path("/etc/audit/audisp-remote.conf")
+ALERT_SCRIPT = Path("/usr/local/sbin/lss-stig-audit-alert")
+SENDMAIL = Path("/usr/sbin/sendmail")
+
+
+def _hup_auditd() -> list[RollbackEntry]:
+    # Ubuntu's auditd.service refuses a manual stop/restart (DISA's fix text
+    # says `systemctl restart auditd`); SIGHUP makes auditd re-read its config
+    # and plugins without dropping events.
+    subprocess.run(["systemctl", "kill", "-s", "SIGHUP", "auditd.service"], capture_output=True)
+    return [RollbackEntry(action="reloaded auditd (SIGHUP)",
+                          undo=[["systemctl", "kill", "-s", "SIGHUP", "auditd.service"]])]
+
+
+def _remote_configured() -> tuple[bool, str]:
+    active = keyval.get(AU_REMOTE, "active")
+    server = keyval.get(AUDISP_REMOTE, "remote_server")
+    ev = f"audispd-plugins: {'installed' if pkg.is_installed('audispd-plugins') else 'not installed'}\n" \
+         f"{AU_REMOTE}: active = {active}\n{AUDISP_REMOTE}: remote_server = {server}"
+    ok = pkg.is_installed("audispd-plugins") and (active or "").lower() == "yes" and bool(server) \
+        and not site.is_local(server or "")
+    return ok, ev
+
+
+# ---- V-270658 — audit records offloaded to another system ----
+
+def _check_offload() -> CheckResult:
+    if not pkg.is_installed("auditd"):
+        return CheckResult("fail", "auditd not installed (see V-270656)")
+    ok, ev = _remote_configured()
+    want = site.get("audit_remote_server")
+    if ok and (not want or keyval.get(AUDISP_REMOTE, "remote_server") == want):
+        return CheckResult("pass", "", ev)
+    if not want:
+        return CheckResult("manual", site.missing("audit_remote_server"), ev)
+    return CheckResult("fail", f"audit records not sent to {want}", ev)
+
+
+def _fix_offload() -> list[RollbackEntry]:
+    want = site.get("audit_remote_server")
+    if not want:
+        raise RuntimeError(site.missing("audit_remote_server"))
+    if not pkg.is_installed("auditd"):
+        raise RuntimeError("auditd not installed — fix V-270656 first")
+    out = pkg.install("audispd-plugins")
+    out += keyval.set_value(AU_REMOTE, "active", "yes", fmt="active = yes")
+    out += keyval.set_value(AUDISP_REMOTE, "remote_server", want, fmt=f"remote_server = {want}")
+    return out + _hup_auditd()
+
+
+register(B, Control("V-270658", _check_offload, _fix_offload,
+                    impact="audit records are also sent to the site audit_remote_server (TCP 60 by default)"))
+
+
+# ---- V-270816 — a week of audit records fits ----
+# A judgement call in the STIG. We measure: the audit log's growth rate over
+# the span the current logs cover, projected to 7 days, against free space.
+
+def _audit_growth() -> tuple[int, float]:
+    """(bytes in audit logs, seconds of history they cover)."""
+    files = [p for p, _ in _audit_logs()]
+    total = sum(Path(p).stat().st_size for p in files)
+    oldest = None
+    for p in files:
+        try:
+            with open(p, errors="replace") as fh:
+                m = re.search(r"msg=audit\((\d+)\.", fh.readline())
+            if m:
+                oldest = min(oldest or float(m.group(1)), float(m.group(1)))
+        except OSError:
+            continue
+    return total, (time.time() - oldest) if oldest else 0.0
+
+
+def _check_capacity() -> CheckResult:
+    if not pkg.is_installed("auditd"):
+        return CheckResult("fail", "auditd not installed (see V-270656)")
+    if _remote_configured()[0]:
+        return CheckResult("pass", "", "audit records are sent to a remote collector (V-270658)")
+    d = _log_dir()
+    if not d.exists():
+        return CheckResult("fail", f"audit log directory {d} missing")
+    st = os.statvfs(d)
+    free, size = st.f_bavail * st.f_frsize, st.f_blocks * st.f_frsize
+    dedicated = os.path.ismount(d)
+    used, span = _audit_growth()
+    week = used / span * 7 * 86400 if span > 3600 else None
+    gb = lambda b: f"{b / 2**30:.1f} GiB"
+    ev = (f"{d}: {'dedicated partition' if dedicated else 'shares its filesystem'}; size {gb(size)}, free {gb(free)}\n"
+          f"audit logs: {gb(used)} covering {span / 3600:.1f} h" +
+          (f" → ~{gb(week)} per week" if week is not None else " (too little history to project)"))
+    if week is not None and week > free:
+        return CheckResult("manual", f"a week of audit records (~{gb(week)}) exceeds free space ({gb(free)})", ev)
+    if not dedicated:
+        return CheckResult("review", f"{d} is not a dedicated partition — confirm capacity is reserved for audit records", ev)
+    if week is None:
+        return CheckResult("review", "not enough audit history yet to project a week — re-run later", ev)
+    return CheckResult("pass", "", ev)
+
+
+register(B, Control("V-270816", _check_capacity))
+
+
+# ---- V-270817 — weekly offload script (standalone systems only) ----
+
+def _check_weekly_offload() -> CheckResult:
+    try:
+        networked = any(l.split()[1] == "00000000" for l in Path("/proc/net/route").read_text().splitlines()[1:])
+    except (OSError, IndexError):
+        networked = True
+    if networked:
+        return CheckResult("na", "interconnected system (has a default route)")
+    weekly = Path("/etc/cron.weekly")
+    hits = [f.name for f in sorted(weekly.iterdir()) if f.is_file() and "audit" in f.read_text(errors="ignore")] \
+        if weekly.is_dir() else []
+    if hits:
+        return CheckResult("review", f"confirm {', '.join(hits)} offloads audit logs to external media",
+                           "/etc/cron.weekly: " + ", ".join(hits))
+    return CheckResult("manual", "no weekly audit offload script in /etc/cron.weekly", "/etc/cron.weekly: none mention audit")
+
+
+register(B, Control("V-270817", _check_weekly_offload))
+
+
+# ---- V-270818 — alert at 75% of audit storage; V-270819 — alert on failure ----
+
+def _alert_script(email: str) -> str:
+    return f"""#!/bin/sh
+# lss-stig: auditd space_left notifier (V-270818). auditd runs this when audit
+# storage crosses space_left; it must reach the SA/ISSO even without an MTA.
+msg="auditd on $(hostname): audit record storage has reached the space_left threshold"
+logger -p authpriv.alert -t auditd-alert "$msg"
+wall "$msg" 2>/dev/null
+if [ -x /usr/sbin/sendmail ]; then
+    printf 'To: %s\\nSubject: %s\\n\\n%s\\n' '{email}' "$msg" "$msg" | /usr/sbin/sendmail -t
+fi
+exit 0
+"""
+
+
+def _space_left_ok(v: str | None, d: Path) -> bool:
+    if not v:
+        return False
+    if v.endswith("%"):
+        return v[:-1].isdigit() and int(v[:-1]) >= 25
+    if not v.isdigit():
+        return False
+    st = os.statvfs(d) if d.exists() else None
+    return st is not None and int(v) >= 0.25 * st.f_blocks * st.f_frsize / 2**20
+
+
+def _check_space_left() -> CheckResult:
+    if not AUDITD_CONF.exists():
+        return CheckResult("fail", "auditd not installed (see V-270656)")
+    g = lambda k: keyval.get(AUDITD_CONF, k)
+    action, space, acct = (g("space_left_action") or ""), g("space_left"), g("action_mail_acct")
+    ev = f"{AUDITD_CONF}: space_left = {space}; space_left_action = {action}; action_mail_acct = {acct}\n" \
+         f"MTA (/usr/sbin/sendmail): {'present' if SENDMAIL.exists() else 'absent'}"
+    problems = []
+    kind = action.split()[0].lower() if action else ""
+    if kind not in ("email", "exec"):
+        problems.append(f"space_left_action = {action or 'unset'}")
+    elif kind == "email" and not SENDMAIL.exists():
+        problems.append("space_left_action = email but no mail transfer agent is installed — alerts go nowhere")
+    elif kind == "exec" and not Path(action.split(None, 1)[1] if " " in action else "").exists():
+        problems.append("space_left_action exec script missing")
+    if not _space_left_ok(space, _log_dir()):
+        problems.append(f"space_left = {space} (needs ≥ 25%)")
+    want = site.get("admin_email")
+    if kind == "email" and (not acct or acct.split("@")[0] == "root") and not want:
+        problems.append("action_mail_acct is root")
+    if problems:
+        if not want:
+            return CheckResult("manual", "; ".join(problems) + " — " + site.missing("admin_email"), ev)
+        return CheckResult("fail", "; ".join(problems), ev)
+    return CheckResult("pass", "", ev)
+
+
+def _fix_space_left() -> list[RollbackEntry]:
+    want = site.get("admin_email")
+    if not want:
+        raise RuntimeError(site.missing("admin_email"))
+    out = keyval.set_value(AUDITD_CONF, "space_left", "25%", fmt="space_left = 25%")
+    if SENDMAIL.exists():
+        out += keyval.set_value(AUDITD_CONF, "space_left_action", "email", fmt="space_left_action = email")
+    else:
+        out += keyval.write_file(ALERT_SCRIPT, _alert_script(want), 0o750)
+        out += keyval.set_value(AUDITD_CONF, "space_left_action", f"exec {ALERT_SCRIPT}",
+                                fmt=f"space_left_action = exec {ALERT_SCRIPT}")
+    out += keyval.set_value(AUDITD_CONF, "action_mail_acct", want, fmt=f"action_mail_acct = {want}")
+    return out + _hup_auditd()
+
+
+register(B, Control("V-270818", _check_space_left, _fix_space_left))
+
+
+def _check_mail_acct() -> CheckResult:
+    if not AUDITD_CONF.exists():
+        return CheckResult("fail", "auditd not installed (see V-270656)")
+    acct = keyval.get(AUDITD_CONF, "action_mail_acct")
+    want = site.get("admin_email")
+    ev = keyval.evidence(AUDITD_CONF, "action_mail_acct") + f"\nsite admin_email: {want or '(not set)'}"
+    if want and acct == want:
+        return CheckResult("pass", "", ev)
+    if not want:
+        if acct and acct.split("@")[0] != "root":
+            return CheckResult("review", f"action_mail_acct = {acct} — confirm it reaches security personnel", ev)
+        return CheckResult("manual", site.missing("admin_email"), ev)
+    return CheckResult("fail", f"action_mail_acct = {acct or 'unset (root)'}", ev)
+
+
+def _fix_mail_acct() -> list[RollbackEntry]:
+    want = site.get("admin_email")
+    if not want:
+        raise RuntimeError(site.missing("admin_email"))
+    return keyval.set_value(AUDITD_CONF, "action_mail_acct", want, fmt=f"action_mail_acct = {want}") + _hup_auditd()
+
+
+register(B, Control("V-270819", _check_mail_acct, _fix_mail_acct))
