@@ -8,34 +8,42 @@ from __future__ import annotations
 
 import re
 import shutil
+from datetime import datetime
 import subprocess
 from pathlib import Path
 
-from lss_stig.lib import journal, sshd, syslog
+from lss_stig.lib import auditrules, journal, sshd, syslog
 from lss_stig.lib.output import info, header, err, warn, GREEN, DIM, RESET
 
 
-def _restore_backup(control_id: str, backup: str, path: str) -> tuple[bool, str]:
+def _restore_backup(control_id: str, backup: str, path: str, run_ts: float | None = None) -> tuple[bool, str]:
     """Restore `path` from `backup`. Returns (ok, message).
 
-    Warns (but still restores) if the live file has been modified since the
-    backup was taken — the operator should know they may be losing edits.
+    Warns (but still restores) if the live file changed after the harden run
+    finished — the operator should know they may be losing edits. The backup's
+    own mtime can't be the reference: it predates harden's edit by design.
     """
     src = Path(backup)
     dst = Path(path)
     if not src.exists():
         return False, f"backup file missing: {backup}"
 
-    if dst.exists():
+    if run_ts is not None and dst.exists():
         try:
-            backup_mtime = src.stat().st_mtime
-            live_mtime = dst.stat().st_mtime
-            if live_mtime > backup_mtime + 1:  # 1s grace for FS resolution
-                warn(f"  {control_id}   {path} was modified after backup — restoring anyway will overwrite those changes")
+            if dst.stat().st_mtime > run_ts + 2:  # grace for FS resolution
+                warn(f"  {control_id}   {path} was modified after the harden run — restoring anyway will overwrite those changes")
         except OSError:
             pass
 
-    shutil.copy2(src, dst)
+    # The directory can be gone when a package this run installed was already
+    # purged (e.g. a retried rollback after auditd's own undo removed
+    # /etc/audit) — there is nothing left to restore into.
+    if not dst.parent.is_dir():
+        return True, f"skipped {path}: {dst.parent} no longer exists"
+    try:
+        shutil.copy2(src, dst)
+    except OSError as exc:
+        return False, f"restore {path} failed: {exc}"
     return True, f"restored {path} from backup"
 
 
@@ -43,6 +51,14 @@ def _run_undo(control_id: str, argv: list[str]) -> tuple[bool, str]:
     """Run a single argv list with shell=False. Returns (ok, message)."""
     if not argv or not isinstance(argv, list):
         return False, f"malformed undo (expected argv list, got {type(argv).__name__})"
+    # With `-e 2` loaded the kernel refuses any rule change until reboot, so a
+    # load can't succeed. Regenerate audit.rules from the restored rules.d
+    # instead; the reverted rules take effect at the next boot.
+    if argv == ["augenrules", "--load"]:
+        if shutil.which("augenrules") is None:
+            return True, "auditd no longer installed — no audit rules to reload"
+        if auditrules.immutable():
+            argv = ["augenrules"]
     try:
         subprocess.run(
             argv,
@@ -55,6 +71,10 @@ def _run_undo(control_id: str, argv: list[str]) -> tuple[bool, str]:
     except FileNotFoundError:
         return False, f"command not found: {argv[0]}"
     except subprocess.CalledProcessError as exc:
+        # Undo must be safe to retry: an override already removed is the goal.
+        if argv[:2] == ["dpkg-statoverride", "--remove"] and exc.returncode == 2 \
+                and "no override present" in (exc.stderr or ""):
+            return True, " ".join(argv) + " (already removed)"
         msg = (exc.stderr or "").strip().splitlines()[-1] if exc.stderr else f"exit {exc.returncode}"
         return False, f"{' '.join(argv)} → {msg}"
 
@@ -111,6 +131,11 @@ def run_rollback(args) -> int:
     # the file before later controls' "restore from backup" recreate it
     # with their stale post-edit state — leaving the file partially
     # hardened. See tests/test_journal.py for the multi-control case.
+    try:
+        run_ts = datetime.fromisoformat(run_data["timestamp"]).timestamp()
+    except (KeyError, TypeError, ValueError):
+        run_ts = None
+    restored: set[str] = set()
     undone: list[str] = []
     for control_id, entries in reversed(list(controls.items())):
         errors_before = errors
@@ -130,7 +155,10 @@ def run_rollback(args) -> int:
 
             # 1. Restore from backup if available
             if backup and path:
-                ok, msg = _restore_backup(control_id, backup, path)
+                # A path several rules edited is restored once per rule, newest
+                # first; only the first restore can find post-run edits.
+                ok, msg = _restore_backup(control_id, backup, path, None if path in restored else run_ts)
+                restored.add(path)
                 if ok:
                     print(f"{GREEN}  ✓{RESET} {control_id}   {msg}")
                     did_something = True
@@ -162,6 +190,10 @@ def run_rollback(args) -> int:
 
     # Rules whose undo failed stay pending, so a retry redoes only those.
     journal.mark_rolled_back(run_data["run_id"], undone)
+
+    if any(a == ["augenrules", "--load"] for es in controls.values()
+           for e in es if isinstance(e.get("undo"), list) for a in e["undo"]) and auditrules.immutable():
+        warn("audit rules are locked until reboot (-e 2) — the restored rules take effect at the next boot")
 
     if sshd_touched:
         if sshd.reload():
