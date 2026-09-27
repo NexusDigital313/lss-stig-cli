@@ -53,3 +53,32 @@ def _check_ssh_installed() -> CheckResult:
 
 
 register(B, Control("V-270665", _check_ssh_installed, lambda: pkg.install("openssh-server")))
+
+
+# ---- CAT II — packages that must be present ----
+
+def _must_have(vuln_id: str, names: list[str], impact: str | None = None) -> None:
+    def check() -> CheckResult:
+        missing = [n for n in names if not pkg.is_installed(n)]
+        ev = _dpkg_evidence(names)
+        if missing:
+            return CheckResult("fail", "not installed: " + ", ".join(missing), ev)
+        return CheckResult("pass", "", ev)
+
+    def fix() -> list[RollbackEntry]:
+        out: list[RollbackEntry] = []
+        for n in names:
+            out += pkg.install(n)
+        return out
+
+    register(B, Control(vuln_id, check, fix, impact=impact))
+
+
+_must_have("V-270654", ["ufw"])
+_must_have("V-270659", ["apparmor"])
+_must_have("V-270661", ["libpam-pwquality"])
+_must_have("V-270662", ["sssd", "libpam-sss", "libnss-sss"],
+           impact="adds pam_sss/nss_sss to the login stack (inert until sssd.conf is configured)")
+_must_have("V-270672", ["opensc-pkcs11"])
+_must_have("V-270673", ["libpam-pkcs11"])
+_must_have("V-270674", ["vlock"])

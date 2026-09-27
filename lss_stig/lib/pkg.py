@@ -86,7 +86,9 @@ def install(pkg: str) -> list[RollbackEntry]:
     if is_installed(pkg):
         return []
     if distro.is_debian_family():
-        cmd = ["apt-get", "install", "-y", pkg]
+        # No recommends: a STIG box should get exactly what the rule asks for
+        # (aide recommends an MTA, which would drag postfix onto the host).
+        cmd = ["apt-get", "install", "-y", "--no-install-recommends", pkg]
         undo = [["apt-get", "purge", "-y", pkg]]
     elif distro.is_rhel_family():
         cmd = ["dnf", "install", "-y", pkg]

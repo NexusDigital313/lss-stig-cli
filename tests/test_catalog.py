@@ -25,9 +25,9 @@ class CatalogTests(unittest.TestCase):
             vals = [getattr(r, attr) for r in self.bench.rules]
             self.assertEqual(len(vals), len(set(vals)), attr)
 
-    def test_every_cat1_rule_has_a_control(self):
+    def test_every_cat1_and_cat2_rule_has_a_control(self):
         missing = [r.vuln_id for r in self.bench.rules
-                   if r.severity == "high" and get_control(KEY, r.vuln_id) is None]
+                   if r.severity in ("high", "medium") and get_control(KEY, r.vuln_id) is None]
         self.assertEqual(missing, [])
 
     def test_select_by_any_id_form(self):
