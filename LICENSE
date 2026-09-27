@@ -1,0 +1,40 @@
+LSS STIG (lss-stig), part of The Linux Security Suite
+Copyright (c) 2026 J. Parmenter. All rights reserved.
+
+PROPRIETARY SOFTWARE — COMMERCIAL LICENSE REQUIRED
+
+This software and its source code are the proprietary work of J. Parmenter.
+A valid, paid license is required for any use beyond evaluation on a single
+host owned by the licensee.
+
+A "license" means a current, paid entitlement issued by the copyright
+holder or an authorized reseller. The scope of use, host count, update
+term, and support level are specified in the license agreement at the
+time of purchase.
+
+Permitted, without a license:
+  - Reading the source code for evaluation and security review.
+  - Running the software in audit-only mode (no system modifications) on a
+    single host owned by the evaluator, for evaluation purposes only.
+
+Prohibited, without a written license from the copyright holder:
+  - Use of the harden, rollback, or checklist subcommands in any production
+    capacity.
+  - Use across more hosts than the purchased license permits.
+  - Redistribution of the source code, binaries, or any derivative work,
+    in whole or in part, by any means.
+  - Sublicensing, resale, hosting as a service, or incorporation into any
+    other product or offering.
+  - Removal or alteration of this notice or any embedded license check.
+
+This license is governed by the laws of the United States. Any dispute
+arising from use of this software shall be resolved exclusively in the
+courts of the licensor's jurisdiction.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR
+OTHER LIABILITY ARISING FROM USE OF THE SOFTWARE.
+
+For commercial licensing, contact the copyright holder.

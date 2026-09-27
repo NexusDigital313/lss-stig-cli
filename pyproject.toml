@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lss-stig"
+dynamic = ["version"]
+description = "LSS STIG — audit, harden and roll back Linux hosts against DISA STIGs, with STIG Viewer (CKLB) checklist export."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "LSS Maintainers", email = "blckgrndntional313proton.me@proton.me" }]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+dependencies = []
+
+[project.scripts]
+lss-stig = "lss_stig.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "lss_stig.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["lss_stig*"]
+
+[tool.setuptools.package-data]
+"lss_stig.benchmarks" = ["*.json"]
