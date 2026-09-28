@@ -136,7 +136,6 @@ def run_rollback(args) -> int:
     except (KeyError, TypeError, ValueError):
         run_ts = None
     restored: set[str] = set()
-    undone: list[str] = []
     for control_id, entries in reversed(list(controls.items())):
         errors_before = errors
         for entry in reversed(entries):  # reverse order for safe undo
@@ -185,11 +184,11 @@ def run_rollback(args) -> int:
             # while the live daemon keeps enforcing the old rules.
             if path.startswith("/etc/ssh"):
                 sshd_touched = True
+        # Marked per rule, not at the end: a rollback killed halfway (a dropped
+        # session, a reboot) must not replay the rules it already undid.
+        # Rules whose undo failed stay pending, so a retry redoes only those.
         if errors == errors_before:
-            undone.append(control_id)
-
-    # Rules whose undo failed stay pending, so a retry redoes only those.
-    journal.mark_rolled_back(run_data["run_id"], undone)
+            journal.mark_rolled_back(run_data["run_id"], [control_id])
 
     if any(a == ["augenrules", "--load"] for es in controls.values()
            for e in es if isinstance(e.get("undo"), list) for a in e["undo"]) and auditrules.immutable():

@@ -67,6 +67,13 @@ def _run(cmd: list[str]) -> None:
         raise RuntimeError(f"{' '.join(cmd)} failed: {(r.stderr or r.stdout).strip()[-400:]}")
 
 
+def _dpkg_installed() -> set[str]:
+    """Names of packages dpkg considers installed (arch qualifier dropped)."""
+    r = subprocess.run(["dpkg-query", "-W", "-f=${db:Status-Abbrev} ${Package}\n"],
+                       capture_output=True, text=True)
+    return {l.split()[1] for l in r.stdout.splitlines() if l.startswith("ii") and len(l.split()) > 1}
+
+
 def is_installed(pkg: str) -> bool:
     """Return True if `pkg` is installed on the running distro family.
 
@@ -133,11 +140,11 @@ def install(*pkgs: str) -> list[RollbackEntry]:
     No-op if all are installed, or if the distro family is neither Debian
     nor RHEL (returns an empty list so the caller can surface a no-op).
 
-    NOTE: rollback removes only the named packages, not the dependencies
-    that were pulled in transitively. On Debian, those dependencies remain
-    marked as manually-installed (because the install was non-interactive)
-    and won't be `apt autoremove`d unless the operator runs that explicitly.
-    A snapshot-and-diff dpkg approach is planned for a future release.
+    On Debian the undo also purges every dependency the install pulled in
+    (dpkg snapshot before/after): purging only the named package left e.g.
+    libnss-sss behind on a real 24.04 VM, and with it `sss` in nsswitch.conf.
+    `apt autoremove` is deliberately not used — it would also remove packages
+    that were already autoremovable before lss-stig ran.
     """
     todo = [p for p in pkgs if not is_installed(p)]
     if not todo:
@@ -147,8 +154,12 @@ def install(*pkgs: str) -> list[RollbackEntry]:
         # No recommends: a STIG box should get exactly what the rule asks for
         # (aide-common recommends a mailer, which would drag postfix onto the
         # host). Callers name any recommended package the rule actually needs.
-        cmd = ["apt-get", *_APT_OPTS, "install", "-y", "--no-install-recommends", *todo]
-        undo = [["apt-get", "purge", "-y", *todo]]
+        before = _dpkg_installed()
+        _run(["apt-get", *_APT_OPTS, "install", "-y", "--no-install-recommends", *todo])
+        new = sorted((_dpkg_installed() - before) | set(todo))
+        deps = [p for p in new if p not in todo]
+        action = f"installed package {' '.join(todo)}" + (f" (+{len(deps)} dependencies)" if deps else "")
+        return [RollbackEntry(action=action, undo=[["apt-get", "purge", "-y", *new]])]
     elif distro.is_rhel_family():
         cmd = ["dnf", "install", "-y", *todo]
         undo = [["dnf", "remove", "-y", *todo]]

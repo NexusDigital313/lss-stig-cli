@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import sys
 
 from lss_stig import __version__, benchmarks
@@ -132,6 +133,47 @@ def _run_checklist(args, bench) -> int:
     return 0
 
 
+class _Tolerant:
+    """Stream wrapper that stops writing once the terminal is gone instead of
+    raising EIO/EPIPE into the middle of a fix or an undo."""
+
+    def __init__(self, stream):
+        self._s, self._dead = stream, False
+
+    def write(self, data):
+        if not self._dead:
+            try:
+                return self._s.write(data)
+            except OSError:
+                self._dead = True
+        return len(data)
+
+    def flush(self):
+        if not self._dead:
+            try:
+                self._s.flush()
+            except OSError:
+                self._dead = True
+
+    def __getattr__(self, name):
+        return getattr(self._s, name)
+
+
+def _survive_disconnect() -> None:
+    # Harden and rollback restart sshd, reload the firewall and run apt: a
+    # dropped SSH session must not SIGHUP them halfway through a change (seen
+    # on a 24.04 VM — the rollback finished, but only because it was lucky).
+    # Line-buffer so output redirected to a file survives an abrupt end.
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        try:
+            stream.reconfigure(line_buffering=True)
+        except (AttributeError, ValueError):
+            pass
+        setattr(sys, name, _Tolerant(stream))
+
+
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     from lss_stig.lib import output
@@ -152,6 +194,9 @@ def main(argv: list[str] | None = None) -> None:
     if os.geteuid() != 0:
         output.err(f"lss-stig {args.command} must run as root (it reads /etc/shadow, sssd.conf, ...)")
         sys.exit(1)
+
+    if args.command in ("harden", "rollback"):
+        _survive_disconnect()
 
     try:
         if args.command == "audit":
