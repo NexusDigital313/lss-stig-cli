@@ -15,6 +15,9 @@ import sys
 from lss_stig import __version__
 
 _color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+# "default": the LSS look. "dod": DISA-tool conventions — 8 standard colors,
+# no wordmark or plates, STIG Viewer status words, CAT I (High) severities.
+_theme = "dod" if os.environ.get("LSS_STIG_THEME", "").lower() == "dod" else "default"
 
 
 def _c(code: str) -> str:
@@ -32,9 +35,31 @@ def _refresh():
     PLATE = {"CAT I": _c("1;38;5;231;48;5;160"), "CAT II": _c("1;38;5;16;48;5;208"),
              "CAT III": _c("1;38;5;16;48;5;255"), "": _c("1;38;5;231;48;5;160")}
     BOLD, DIM, RESET = _c("1"), _c("2"), _c("0")
+    if _theme == "dod":
+        RED, GREEN, YELLOW = _c("31"), _c("32"), _c("33")
+        BLUE = CYAN = _c("36")
+        GRAY = EMBER = ""
+        CHROME = ["", "", ""]
 
 
 _refresh()
+
+
+def set_theme(name: str) -> None:
+    global _theme
+    _theme = name
+    _refresh()
+
+
+def _dod() -> bool:
+    return _theme == "dod"
+
+
+_SEVERITY = {"CAT I": "High", "CAT II": "Medium", "CAT III": "Low"}
+
+
+def cat_label(cat: str) -> str:
+    return f"{cat} ({_SEVERITY[cat]})" if _dod() and cat in _SEVERITY else cat
 
 
 def disable_color() -> None:
@@ -52,7 +77,7 @@ def banner(subtitle: str = "") -> None:
     from lss_stig import _edition
     tag = f"{YELLOW}owner build · unlicensed{RESET}" if _edition.EDITION == "owner" else ""
     width = _width()
-    if _color:
+    if _color and not _dod():
         side = [f"{GREEN}v{__version__}{RESET}", f"{RED}▌{RESET}{BOLD}DISA STIG{RESET}",
                 f"{BLUE}THE LINUX SECURITY SUITE{RESET}"]
         print()
@@ -64,7 +89,10 @@ def banner(subtitle: str = "") -> None:
         print(f"\n  LSS STIG  v{__version__}" + (f"  {tag}" if tag else ""))
     if subtitle:
         print(f"  {GRAY}{_clip(subtitle, width - 3)}{RESET}")
-    print(f"  {BLUE}▪{EMBER}{'━' * (width - 6)}{BLUE}▪{RESET}")
+    if _dod():
+        print(f"  {'─' * (width - 4)}")
+    else:
+        print(f"  {BLUE}▪{EMBER}{'━' * (width - 6)}{BLUE}▪{RESET}")
 
 
 def header(text: str) -> None:
@@ -73,7 +101,7 @@ def header(text: str) -> None:
 
 def _plate(text: str, kind: str = "") -> str:
     """A label on a solid color plate (color terminals), or bold text (plain)."""
-    return f"{PLATE[kind]} {text} {RESET}" if _color else f"{BOLD}{text}{RESET}"
+    return f"{PLATE[kind]} {text} {RESET}" if _color and not _dod() else f"{BOLD}{text}{RESET}"
 
 
 def info(msg: str) -> None:
@@ -177,9 +205,13 @@ def cascade(rows: list, verbose: bool = False) -> None:
         open_ = sum(1 for r in mine if r[2] in ("fail", "manual"))
         catc = globals()[_CAT_COLOR[cat]]
         tail = f" {len(mine)} rules · " + (f"{RED}{open_} open{RESET}" if open_ else f"{GREEN}clean{RESET}")
-        lead = f"  {_plate(cat, cat)} "
+        if _dod():
+            lead = f"  {catc}{BOLD}{cat_label(cat)}{RESET} "
+            rule = "─"
+        else:
+            lead, rule = f"  {_plate(cat, cat)} ", "━"
         rule_len = max(4, width - len(_strip(lead)) - len(_strip(tail)) - 2)
-        print(f"\n{lead}{EMBER}{'━' * rule_len}{RESET}{tail}")
+        print(f"\n{lead}{EMBER}{rule * rule_len}{RESET}{tail}")
         areas: dict[str, list] = {}
         for r in sorted(mine, key=lambda r: (_ORDER.get(r[2], 9), r[0].vuln_id)):
             areas.setdefault(r[1], []).append(r)
@@ -218,13 +250,17 @@ def _strip(s: str) -> str:
 def _bar(done: int, total: int, n_open: int, width: int = 28) -> str:
     f = round(width * done / total) if total else width
     col = GREEN if not n_open else YELLOW if done >= total * 0.8 else RED
-    return f"{col}{'█' * f}{EMBER}{'░' * (width - f)}{RESET}"
+    full, empty = ("#", "-") if _dod() else ("█", "░")
+    return f"{col}{full * f}{EMBER}{empty * (width - f)}{RESET}"
 
 
 def summary(counts: dict[str, int], by_cat_open: dict[str, int],
             by_cat_total: dict[str, int] | None = None, by_cat_pass: dict[str, int] | None = None) -> None:
     width = _width()
-    print(f"\n  {_plate('POSTURE')} {EMBER}{'━' * (width - 14)}{RESET}")
+    if _dod():
+        print(f"\n  {BOLD}POSTURE{RESET} {'─' * (width - 12)}")
+    else:
+        print(f"\n  {_plate('POSTURE')} {EMBER}{'━' * (width - 14)}{RESET}")
     if by_cat_total:
         for cat in ("CAT I", "CAT II", "CAT III"):
             tot, ok = by_cat_total.get(cat, 0), (by_cat_pass or {}).get(cat, 0)
@@ -233,13 +269,18 @@ def summary(counts: dict[str, int], by_cat_open: dict[str, int],
             n_open = by_cat_open.get(cat, 0)
             catc = globals()[_CAT_COLOR[cat]]
             note = f"{RED}{n_open} open{RESET}" if n_open else f"{GREEN}no open findings{RESET}"
-            print(f"   {catc}{cat:<8}{RESET} {_bar(ok, tot, n_open)}  {ok:>3}/{tot:<3}  {note}")
+            label = cat_label(cat)
+            lw = 15 if _dod() else 8
+            bar_w = max(8, min(28, width - lw - 34))
+            print(f"   {catc}{label:<{lw}}{RESET} {_bar(ok, tot, n_open, bar_w)}  {ok:>3}/{tot:<3}  {note}")
         print()
     fixable, need = counts.get("fail", 0), counts.get("manual", 0)
-    _flow("   ", [f"{GREEN}✓{RESET} {counts.get('pass', 0)} not a finding",
-                  f"{RED}✗{RESET} {fixable + need} open {GRAY}({fixable} auto-fixable){RESET}",
-                  f"{YELLOW}?{RESET} {counts.get('review', 0)} need review",
-                  f"{GRAY}- {counts.get('na', 0)} n/a{RESET}"])
+    words = (("Not a Finding", "Open", "Not Reviewed", "Not Applicable") if _dod()
+             else ("not a finding", "open", "need review", "n/a"))
+    _flow("   ", [f"{GREEN}✓{RESET} {counts.get('pass', 0)} {words[0]}",
+                  f"{RED}✗{RESET} {fixable + need} {words[1]} {GRAY}({fixable} auto-fixable){RESET}",
+                  f"{YELLOW}?{RESET} {counts.get('review', 0)} {words[2]}",
+                  f"{GRAY}- {counts.get('na', 0)} {words[3]}{RESET}"])
     if counts.get("unimpl"):
         print(f"   {GRAY}· {counts['unimpl']} not reviewed (no automated check){RESET}")
     if by_cat_open.get("CAT I"):

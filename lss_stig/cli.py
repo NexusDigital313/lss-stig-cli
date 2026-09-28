@@ -26,6 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("-V", "--version", action="version", version=f"lss-stig {__version__}")
     p.add_argument("--no-color", action="store_true", help="disable colored output")
+    p.add_argument("--theme", choices=("default", "dod"),
+                   help="output style; dod = DISA-tool conventions (also LSS_STIG_THEME=dod)")
     p.add_argument("--benchmark", metavar="KEY", choices=sorted(benchmarks.SUPPORTED),
                    help="STIG benchmark (default: detected from the host)")
     sub = p.add_subparsers(dest="command", metavar="COMMAND")
@@ -236,6 +238,8 @@ def _survive_disconnect() -> None:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     from lss_stig.lib import output
+    if args.theme:
+        output.set_theme(args.theme)
     if args.no_color:
         output.disable_color()
     if not args.command:

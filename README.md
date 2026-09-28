@@ -58,6 +58,11 @@ lss-stig list [--cat I] [--automated]
 Audit exits `1` when any finding is open, `0` otherwise. Add `-v` to list
 passing and not-applicable rules too.
 
+`--theme dod` (or `LSS_STIG_THEME=dod`) switches to DISA-tool conventions:
+the 8 standard terminal colors only, no banner art, STIG Viewer status words
+(Open, Not a Finding, Not Reviewed, Not Applicable) and CAT I (High) style
+severities. `--no-color` and piped output are plain text in either theme.
+
 ## License
 
 `harden --confirm` needs a license. Everything else is free without one:
