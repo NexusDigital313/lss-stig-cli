@@ -8,8 +8,8 @@ import os
 import sys
 from pathlib import Path
 
-from lss_stig.lib import distro, journal, pkg, syslog
-from lss_stig.lib.output import DIM, GREEN, RESET, YELLOW, banner, err, header, info, result_line, warn
+from lss_stig.lib import distro, journal, output, pkg, syslog
+from lss_stig.lib.output import DIM, RESET, YELLOW, banner, err, header, info, warn
 from lss_stig.lib.registry import Benchmark, get_control, select_rules
 from lss_stig.audit import evaluate
 
@@ -72,8 +72,7 @@ def run_harden(args, bench: Benchmark) -> int:
             continue
 
         if dry_run:
-            print(f"  {YELLOW}→{RESET} {rule.category:<7} {rule.vuln_id} {rule.stig_id}  "
-                  f"{DIM}would fix: {before.detail}{RESET}")
+            output.step("→", "YELLOW", rule, before.detail)
             would += 1
             continue
 
@@ -106,36 +105,39 @@ def run_harden(args, bench: Benchmark) -> int:
                 pass
             after = evaluate(bench, rule)
             if after.status == "pass":
-                print(f"  {GREEN}✓{RESET} {rule.category:<7} {rule.vuln_id} {rule.stig_id}  {DIM}fixed{RESET}")
+                output.step("✓", "GREEN", rule, f"fixed · was: {before.detail}")
                 syslog.info(f"harden run_id={run_id} rule={rule.vuln_id} status=fixed")
                 fixed += 1
             else:
-                result_line(rule, after.status, f"fix applied, still {after.status}: {after.detail}")
+                output.step("◐", "YELLOW", rule, f"fix applied, still {after.status}: {after.detail}")
                 syslog.warn(f"harden run_id={run_id} rule={rule.vuln_id} status=still-{after.status}")
                 still_open += 1
         except KeyboardInterrupt:
             aborted = True
             break
         except Exception as exc:
-            result_line(rule, "fail", f"fix error: {exc}")
+            output.step("✗", "RED", rule, f"fix error: {exc}")
             syslog.err(f"harden run_id={run_id} rule={rule.vuln_id} error={exc!r}")
             errors += 1
 
-    print()
     if dry_run:
-        info(f"Would fix: {would}   Already compliant or not auto-fixable: {skipped}")
-        if would:
-            info("Apply with: sudo lss-stig harden --confirm")
+        output.tally([("→", "YELLOW", would, "would be fixed"),
+                      ("·", "GRAY", skipped, "already compliant or not auto-fixable")])
+        output.next_steps([("sudo lss-stig harden --confirm", f"apply these {would} fixes")] if would else [])
+        print()
         return 0
 
     jpath = journal.write_run(run_id, entries)
     journal.set_current_run_id(None)
-    info(f"Fixed: {fixed}   Still open: {still_open}   Errors: {errors}   Skipped: {skipped}"
-         + (f"   Declined: {declined}" if interactive else ""))
+    output.tally([("✓", "GREEN", fixed, "fixed"), ("◐", "YELLOW", still_open, "still open"),
+                  ("✗", "RED", errors, "errors"), ("·", "GRAY", skipped, "skipped")]
+                 + ([("-", "GRAY", declined, "declined")] if interactive else []))
     syslog.info(f"harden done run_id={run_id} fixed={fixed} open={still_open} errors={errors}")
     if entries:
         info(f"Journal: {jpath}")
-        info("Undo:    sudo lss-stig rollback --last")
+        output.next_steps([("sudo lss-stig audit", "verify and write a fresh checklist"),
+                           ("sudo lss-stig rollback --last", "undo this run")])
+    print()
     if aborted:
         err("interrupted — changes so far are journaled; undo with: sudo lss-stig rollback --last")
         return 130

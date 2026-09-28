@@ -35,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--json", action="store_true", help="print the full result record as JSON")
     a.add_argument("-o", "--output", metavar="PATH", help="checklist path (default: ~/.local/share/lss-stig/checklists/)")
     a.add_argument("--no-checklist", action="store_true", help="don't write a .cklb file")
+    a.add_argument("-v", "--verbose", action="store_true", help="list passing and not-applicable rules too")
 
     h = sub.add_parser("harden", help="fix open findings that have a safe automatic fix")
     mode = h.add_mutually_exclusive_group(required=True)
@@ -60,7 +61,64 @@ def build_parser() -> argparse.ArgumentParser:
 
     st = sub.add_parser("site", help="show or set site values (time source, audit collector, admin email)")
     st.add_argument("assign", nargs="*", metavar="KEY=VALUE", help="e.g. time_server=tick.usno.navy.mil")
+
+    lic = sub.add_parser("license", help="install, inspect or remove this host's license")
+    lsub = lic.add_subparsers(dest="license_cmd", metavar="ACTION")
+    lsub.add_parser("status", help="show the license state (default)")
+    li = lsub.add_parser("install", help="install a license file")
+    li.add_argument("file")
+    lsub.add_parser("id", help="print this host's ID, for a host-bound license")
+    lsub.add_parser("remove", help="remove this host's license")
     return p
+
+
+def _run_license(args) -> int:
+    from lss_stig.lib import license
+    from lss_stig.lib.output import BOLD, GRAY, GREEN, RED, RESET, err, info
+    cmd = args.license_cmd or "status"
+    if cmd == "id":
+        print(license.host_id())
+        return 0
+    if os.geteuid() != 0:
+        err(f"lss-stig license {cmd} needs root (the license lives in {license.CONF_DIR})")
+        return 1
+    if cmd == "install":
+        try:
+            text = open(args.file, encoding="utf-8", errors="replace").read(65536)
+        except OSError as exc:
+            err(f"{args.file}: {exc.strerror}")
+            return 1
+        st = license.install_offline(text)
+    elif cmd == "remove":
+        st = license.remove()
+        (info if st.valid else err)(st.detail)
+        return 0 if st.valid else 1
+    else:
+        st = license.check()
+    mark = f"{GREEN}●{RESET}" if st.valid else f"{RED}●{RESET}"
+    print(f"\n  {mark} {BOLD}{st.detail}{RESET}")
+    for label, val in (("Product", st.product), ("Licensee", st.licensee), ("Expires", st.expires),
+                       ("Source", st.source), ("Host ID", license.host_id())):
+        if val:
+            print(f"    {GRAY}{label:<9}{RESET} {val}")
+    if not st.valid:
+        print(f"\n  {GRAY}Free without a license: audit, checklists, harden --dry-run, rollback.{RESET}")
+        print(f"  {GRAY}Send `lss-stig license id` to get a license file, then:{RESET}")
+        print(f"  {GRAY}  sudo lss-stig license install <file.lic>{RESET}")
+    print()
+    return 0 if st.valid else 1
+
+
+def _require_license() -> None:
+    from lss_stig.lib import license
+    from lss_stig.lib.output import err
+    st = license.check()
+    if st.valid:
+        return
+    err(f"harden --confirm needs a license: {st.detail}")
+    err("  preview for free:  sudo lss-stig harden --dry-run")
+    err("  details:           sudo lss-stig license")
+    sys.exit(3)
 
 
 def _run_site(args) -> int:
@@ -184,6 +242,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(0)
     if args.command == "site":
         sys.exit(_run_site(args))
+    if args.command == "license":
+        sys.exit(_run_license(args))
 
     key = _resolve_benchmark(args)
     bench = benchmarks.activate(key)
@@ -195,6 +255,8 @@ def main(argv: list[str] | None = None) -> None:
         output.err(f"lss-stig {args.command} must run as root (it reads /etc/shadow, sssd.conf, ...)")
         sys.exit(1)
 
+    if args.command == "harden" and args.confirm:
+        _require_license()
     if args.command in ("harden", "rollback"):
         _survive_disconnect()
 

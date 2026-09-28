@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lss_stig import __version__, checklist
-from lss_stig.lib import distro, paths
-from lss_stig.lib.output import banner, header, info, result_line, summary, warn
+from lss_stig.lib import distro, output, paths
+from lss_stig.lib.output import banner, info, summary, warn
 from lss_stig.lib.registry import CATEGORY, Benchmark, CheckResult, get_control, select_rules
 
 RESULTS_DIR = Path("/var/log/lss-stig")
@@ -35,16 +35,20 @@ def run_audit(args, bench: Benchmark) -> int:
 
     if not json_mode:
         automated = sum(1 for r in rules if get_control(bench.key, r.vuln_id))
-        banner(f"{bench.label} · {len(rules)} rules ({automated} automated) · read-only")
-        header("Findings")
+        banner(f"{bench.label} · {distro.detect().name} · {len(rules)} rules ({automated} automated) · read-only")
 
     results: dict[str, dict] = {}
+    rows = []
     counts = {s: 0 for s in ("pass", "fail", "manual", "review", "na", "unimpl")}
     open_by_cat = {c: 0 for c in CATEGORY.values()}
+    total_by_cat = {c: 0 for c in CATEGORY.values()}
+    pass_by_cat = {c: 0 for c in CATEGORY.values()}
 
-    # Automated rules first, CAT I → III, so what matters scrolls by first.
     order = {"high": 0, "medium": 1, "low": 2}
-    for rule in sorted(rules, key=lambda r: (order.get(r.severity, 3), r.vuln_id)):
+    ordered = sorted(rules, key=lambda r: (order.get(r.severity, 3), r.vuln_id))
+    for i, rule in enumerate(ordered, 1):
+        if not json_mode:
+            output.progress(i, len(ordered), rule.vuln_id)
         r = evaluate(bench, rule)
         results[rule.vuln_id] = {
             "vuln_id": rule.vuln_id, "rule_id": rule.rule_id, "stig_id": rule.stig_id,
@@ -52,10 +56,15 @@ def run_audit(args, bench: Benchmark) -> int:
             "evidence": r.evidence,
         }
         counts[r.status] = counts.get(r.status, 0) + 1
+        if r.status != "na":
+            total_by_cat[rule.category] += 1
+        if r.status == "pass":
+            pass_by_cat[rule.category] += 1
         if r.status in ("fail", "manual"):
             open_by_cat[rule.category] += 1
-        if not json_mode and r.status != "unimpl":
-            result_line(rule, r.status, r.detail)
+        rows.append((rule, output.area_of(get_control(bench.key, rule.vuln_id)), r.status, r.detail))
+    if not json_mode:
+        output.progress_done()
 
     record = _save(bench, results, counts)
     cklb_path = None
@@ -64,14 +73,23 @@ def run_audit(args, bench: Benchmark) -> int:
 
     if json_mode:
         print(json.dumps(record, indent=2))
-    else:
-        summary(counts, open_by_cat)
-        print()
-        if cklb_path:
-            info(f"Checklist (STIG Viewer 3): {cklb_path}")
-        if counts["fail"]:
-            info(f"{counts['fail']} open finding(s) can be fixed automatically — preview: "
-                 "sudo lss-stig harden --dry-run")
+        return 1 if counts["fail"] or counts["manual"] else 0
+
+    output.cascade(rows, verbose=getattr(args, "verbose", False))
+    summary(counts, open_by_cat, total_by_cat, pass_by_cat)
+    print()
+    if cklb_path:
+        info(f"Checklist for STIG Viewer 3 / eMASS: {cklb_path}")
+    steps = []
+    if counts["fail"]:
+        steps.append(("sudo lss-stig harden --dry-run", f"preview {counts['fail']} automatic fixes"))
+        steps.append(("sudo lss-stig harden --confirm", "apply them · every change is journaled"))
+    if any("site value" in (r[3] or "") for r in rows):
+        steps.append(("sudo lss-stig site", "set the site values some rules are waiting on"))
+    if not getattr(args, "verbose", False):
+        steps.append(("sudo lss-stig audit -v", "list passing rules too"))
+    output.next_steps(steps)
+    print()
     return 1 if counts["fail"] or counts["manual"] else 0
 
 

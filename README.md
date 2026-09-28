@@ -55,7 +55,27 @@ sudo lss-stig checklist -o host.cklb    # rebuild a checklist from the last audi
 lss-stig list [--cat I] [--automated]
 ```
 
-Audit exits `1` when any finding is open, `0` otherwise.
+Audit exits `1` when any finding is open, `0` otherwise. Add `-v` to list
+passing and not-applicable rules too.
+
+## License
+
+`harden --confirm` needs a license. Everything else is free without one:
+audit, checklists, `list`, `site`, `harden --dry-run` and `rollback`, so a
+host can always be undone even after its license lapses.
+
+A license is a signed file checked locally, with no network access, so it
+works on air-gapped hosts. It can be issued for specific hosts and can
+carry an expiry date.
+
+```bash
+lss-stig license id                     # this host's ID, to send for a host-bound license
+sudo lss-stig license install host.lic  # install it (/etc/lss-stig/license.lic)
+sudo lss-stig license                   # show the license state
+sudo lss-stig license remove
+```
+
+Without a license, `harden --confirm` exits `3`.
 
 ### Result statuses
 
@@ -126,3 +146,17 @@ then review the diff against the previous catalog and move the controls over.
 ```bash
 python3 -m unittest discover -s tests
 ```
+
+### Issuing licenses (vendor)
+
+```bash
+tools/issue_license.py issue --key ~/lss-stig-signing.key \
+    --licensee "Example Program Office" --tier Enclave \
+    --host 1A2B-3C4D-5E6F-7A8B --expires 2027-09-30 --out example.lic
+```
+
+Omit `--host` for a site license, and `--expires` for a perpetual one. The
+signing key must match `OFFLINE_PUBLIC_KEY` in `lss_stig/lib/license.py`.
+It never goes in this repository. To replace it, run
+`tools/issue_license.py keygen --out FILE` and put the printed public key
+into `license.py`; licenses signed with the old key then stop verifying.
