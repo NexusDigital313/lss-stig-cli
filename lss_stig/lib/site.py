@@ -34,9 +34,17 @@ def get(key: str) -> str | None:
     return v or None
 
 
+_BLOCKED = "site value"
+
+
 def missing(key: str) -> str:
     """Detail line for a rule blocked on an unset site value."""
-    return f"site value '{key}' not set — run: sudo lss-stig site {key}=<value>"
+    return f"{_BLOCKED} '{key}' not set — run: sudo lss-stig site {key}=<value>"
+
+
+def is_blocked(detail: str) -> bool:
+    """True for a detail line produced by missing()."""
+    return f"{_BLOCKED} '" in (detail or "")
 
 
 def validate(key: str, value: str) -> str:

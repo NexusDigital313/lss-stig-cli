@@ -43,7 +43,7 @@ class LicenseStatus:
     valid: bool
     detail: str = ""
     licensee: str = ""
-    product: str = ""
+    tier: str = ""
     source: str = ""        # owner | offline-file
     expires: str = ""
 
@@ -89,6 +89,8 @@ def parse_offline(text: str) -> tuple[dict | None, str]:
         payload = json.loads(raw)
     except (binascii.Error, ValueError):
         return None, "license file is damaged"
+    except RecursionError:
+        return None, "license file is damaged"
     if not isinstance(payload, dict) or not ed25519.verify(OFFLINE_PUBLIC_KEY, signing_bytes(payload), sig):
         return None, "license signature is not valid"
     return payload, ""
@@ -103,13 +105,13 @@ def _offline_status(payload: dict, today: date | None = None) -> LicenseStatus:
     if exp:
         try:
             if date.fromisoformat(exp) < today:
-                return LicenseStatus(False, f"license expired on {exp}", who, tier, expires=exp)
+                return LicenseStatus(False, f"license expired on {exp}", licensee=who, tier=tier, expires=exp)
         except ValueError:
             return LicenseStatus(False, "license has an unreadable expiry date")
     hosts = payload.get("hosts") or []
     if hosts and host_id() not in hosts:
-        return LicenseStatus(False, f"license is not issued for this host (host ID {host_id()})", who, tier)
-    return LicenseStatus(True, "license valid", who, tier, "offline-file", exp)
+        return LicenseStatus(False, f"license is not issued for this host (host ID {host_id()})", licensee=who, tier=tier)
+    return LicenseStatus(True, "license valid", licensee=who, tier=tier, source="offline-file", expires=exp)
 
 
 def install_offline(text: str) -> LicenseStatus:
@@ -136,7 +138,11 @@ def check() -> LicenseStatus:
         return LicenseStatus(True, "owner build — license gate disabled", source="owner")
     if not OFFLINE_PATH.exists():
         return LicenseStatus(False, "no license on this host")
-    payload, why = parse_offline(OFFLINE_PATH.read_text(errors="replace"))
+    try:
+        text = OFFLINE_PATH.read_text(errors="replace")
+    except OSError as exc:
+        return LicenseStatus(False, f"cannot read {OFFLINE_PATH}: {exc.strerror}")
+    payload, why = parse_offline(text)
     if payload is None:
         return LicenseStatus(False, why)
     return _offline_status(payload)

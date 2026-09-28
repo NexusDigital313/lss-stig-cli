@@ -20,6 +20,10 @@ class Ed25519Tests(unittest.TestCase):
         self.assertTrue(ed25519.verify(PUBLIC, b"", bytes.fromhex(sig)))
         self.assertFalse(ed25519.verify(PUBLIC, b"x", bytes.fromhex(sig)))
 
+    def test_non_canonical_point_rejected(self):
+        p = 2**255 - 19
+        self.assertIsNone(ed25519._decompress(((p - 1) | 1 << 255).to_bytes(32, "little")))
+
     def test_shipped_key_is_a_valid_point(self):
         self.assertEqual(len(license.OFFLINE_PUBLIC_KEY), 32)
         self.assertIsNotNone(ed25519._decompress(license.OFFLINE_PUBLIC_KEY))
@@ -80,6 +84,16 @@ class OfflineTests(Isolated):
         self.assertTrue(license._offline_status(payload, date(2027, 1, 1)).valid)
         self.assertFalse(license._offline_status(payload, date(2027, 1, 2)).valid)
 
+    def test_deeply_nested_json(self):
+        import base64
+        body = base64.b64encode(b"[" * 100000 + b"]" * 100000).decode()
+        text = f"{license._BEGIN}\n{body}\n{license._SIG}\nAAAA\n{license._END}\n"
+        self.assertFalse(license.install_offline(text).valid)
+
+    def test_status_fields(self):
+        st = license.install_offline(make({**BASE, "expires": "2099-01-01"}))
+        self.assertEqual((st.licensee, st.tier, st.expires), ("Example PMO", "Enclave", "2099-01-01"))
+
     def test_garbage(self):
         self.assertFalse(license.install_offline("hello").valid)
         self.assertFalse(license.install_offline(license._BEGIN + "!!" + license._SIG + "!!" + license._END).valid)
@@ -95,6 +109,12 @@ class GateTests(Isolated):
         self.assertTrue(license.remove().valid)
         self.assertFalse(license.OFFLINE_PATH.exists())
         self.assertFalse(license.check().valid)
+
+    def test_unreadable_license_path(self):
+        license.OFFLINE_PATH.mkdir()
+        st = license.check()
+        self.assertFalse(st.valid)
+        self.assertIn("cannot read", st.detail)
 
     def test_installed_file_that_went_bad(self):
         license.install_offline(make({**BASE, "expires": "2099-01-01"}))

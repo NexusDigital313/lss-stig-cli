@@ -84,7 +84,8 @@ def _run_license(args) -> int:
         return 1
     if cmd == "install":
         try:
-            text = open(args.file, encoding="utf-8", errors="replace").read(65536)
+            with open(args.file, encoding="utf-8", errors="replace") as f:
+                text = f.read(4 << 20)
         except OSError as exc:
             err(f"{args.file}: {exc.strerror}")
             return 1
@@ -97,7 +98,7 @@ def _run_license(args) -> int:
         st = license.check()
     mark = f"{GREEN}●{RESET}" if st.valid else f"{RED}●{RESET}"
     print(f"\n  {mark} {BOLD}{st.detail}{RESET}")
-    for label, val in (("Product", st.product), ("Licensee", st.licensee), ("Expires", st.expires),
+    for label, val in (("Tier", st.tier), ("Licensee", st.licensee), ("Expires", st.expires),
                        ("Source", st.source), ("Host ID", license.host_id())):
         if val:
             print(f"    {GRAY}{label:<9}{RESET} {val}")

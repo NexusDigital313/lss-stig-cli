@@ -55,22 +55,29 @@ def issue(a) -> int:
         if not re.fullmatch(r"[0-9A-F]{4}(-[0-9A-F]{4}){3}", h):
             print(f"bad host ID {h!r} (expected XXXX-XXXX-XXXX-XXXX from `lss-stig license id`)", file=sys.stderr)
             return 2
+    expires = ""
     if a.expires:
-        date.fromisoformat(a.expires)
+        try:
+            expires = date.fromisoformat(a.expires).isoformat()  # stored as YYYY-MM-DD for any client Python
+        except ValueError:
+            print(f"bad --expires {a.expires!r} (expected YYYY-MM-DD)", file=sys.stderr)
+            return 2
     payload = {
         "product": "lss-stig",
         "id": str(uuid.uuid4()),
         "licensee": a.licensee,
         "tier": a.tier,
         "hosts": sorted(set(a.host or [])),
-        "expires": a.expires or "",
+        "expires": expires,
         "issued": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
     }
     text = license.encode_offline(payload, ed25519.sign(secret, license.signing_bytes(payload)))
-    assert license.parse_offline(text)[0] == payload
+    if license.parse_offline(text)[0] != payload:
+        print("internal error: the issued license does not verify — nothing written", file=sys.stderr)
+        return 1
     Path(a.out).write_text(text)
     scope = f"{len(payload['hosts'])} host(s)" if payload["hosts"] else "any host"
-    print(f"{a.out}: {a.licensee} · {a.tier} · {scope} · expires {a.expires or 'never'} · id {payload['id']}")
+    print(f"{a.out}: {a.licensee} · {a.tier} · {scope} · expires {expires or 'never'} · id {payload['id']}")
     return 0
 
 

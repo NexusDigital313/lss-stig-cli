@@ -8,6 +8,7 @@ stdout is not a TTY, when NO_COLOR is set, or with --no-color.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 
@@ -54,10 +55,12 @@ def info(msg: str) -> None:
 
 
 def warn(msg: str) -> None:
+    progress_done()
     print(f"{YELLOW}!!{RESET} {msg}", file=sys.stderr)
 
 
 def err(msg: str) -> None:
+    progress_done()
     print(f"{RED}error:{RESET} {msg}", file=sys.stderr)
 
 
@@ -71,18 +74,6 @@ _SYMBOL = {
 }
 
 _CAT_COLOR = {"CAT I": "RED", "CAT II": "YELLOW", "CAT III": "GRAY"}
-
-
-def result_line(rule, status: str, detail: str = "") -> None:
-    sym, color = _SYMBOL.get(status, ("✗", "RED"))
-    col = globals()[color]
-    cat = rule.category
-    catc = globals()[_CAT_COLOR.get(cat, "GRAY")]
-    line = (f"  {col}{sym}{RESET} {catc}{cat:<7}{RESET} {BOLD}{rule.vuln_id}{RESET} "
-            f"{GRAY}{rule.stig_id}{RESET}  {_short(rule.title)}")
-    if detail:
-        line += f"  {DIM}({detail}){RESET}"
-    print(line)
 
 
 def _short(title: str, width: int = 78) -> str:
@@ -105,18 +96,27 @@ def _clip(text: str, room: int) -> str:
 # ---- progress (TTY only; nothing on a pipe or in a log) ----------------------
 
 def progress(i: int, n: int, label: str) -> None:
-    if not _live():
+    cols = shutil.get_terminal_size((100, 24)).columns
+    if not _live() or cols < 60:
         return
     filled = round(24 * i / n) if n else 24
     line = f"  {GRAY}auditing{RESET} {BLUE}{'━' * filled}{GRAY}{'─' * (24 - filled)}{RESET} {i:>3}/{n}  {GRAY}{label}{RESET}"
     sys.stdout.write("\r\033[K" + line)
     sys.stdout.flush()
+    global _progress_shown
+    _progress_shown = True
+
+
+_progress_shown = False
 
 
 def progress_done() -> None:
-    if _live():
+    """Clear the live progress line, if one is drawn (warnings call this first)."""
+    global _progress_shown
+    if _progress_shown:
         sys.stdout.write("\r\033[K")
         sys.stdout.flush()
+        _progress_shown = False
 
 
 def _live() -> bool:
@@ -164,7 +164,7 @@ def cascade(rows: list, verbose: bool = False) -> None:
             stem = "   " if last_area else f"{GRAY}│{RESET}  "
             items = areas[area]
             shown = [r for r in items if verbose or r[2] in ("fail", "manual", "review")]
-            folded = {s: sum(1 for r in items if r[2] == s and r not in shown) for s in ("pass", "na")}
+            folded = {s: 0 if verbose else sum(1 for r in items if r[2] == s) for s in ("pass", "na")}
             lines: list[tuple[str, str]] = []
             for rule, _, status, detail in shown:
                 sym, color = _SYMBOL.get(status, ("✗", "RED"))
@@ -186,13 +186,12 @@ def cascade(rows: list, verbose: bool = False) -> None:
 
 
 def _strip(s: str) -> str:
-    import re
     return re.sub(r"\033\[[0-9;]*m", "", s)
 
 
-def _bar(done: int, total: int, width: int = 28) -> str:
+def _bar(done: int, total: int, n_open: int, width: int = 28) -> str:
     f = round(width * done / total) if total else width
-    col = GREEN if done == total else YELLOW if done >= total * 0.8 else RED
+    col = GREEN if not n_open else YELLOW if done >= total * 0.8 else RED
     return f"{col}{'█' * f}{GRAY}{'░' * (width - f)}{RESET}"
 
 
@@ -208,7 +207,7 @@ def summary(counts: dict[str, int], by_cat_open: dict[str, int],
             n_open = by_cat_open.get(cat, 0)
             catc = globals()[_CAT_COLOR[cat]]
             note = f"{RED}{n_open} open{RESET}" if n_open else f"{GREEN}no open findings{RESET}"
-            print(f"   {catc}{cat:<8}{RESET} {_bar(ok, tot)}  {ok:>3}/{tot:<3}  {note}")
+            print(f"   {catc}{cat:<8}{RESET} {_bar(ok, tot, n_open)}  {ok:>3}/{tot:<3}  {note}")
         print()
     fixable, need = counts.get("fail", 0), counts.get("manual", 0)
     _flow("   ", [f"{GREEN}✓{RESET} {counts.get('pass', 0)} not a finding",

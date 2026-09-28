@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lss_stig import __version__, checklist
-from lss_stig.lib import distro, output, paths
+from lss_stig.lib import distro, output, paths, site
 from lss_stig.lib.output import banner, info, summary, warn
 from lss_stig.lib.registry import CATEGORY, Benchmark, CheckResult, get_control, select_rules
 
@@ -56,7 +56,7 @@ def run_audit(args, bench: Benchmark) -> int:
             "evidence": r.evidence,
         }
         counts[r.status] = counts.get(r.status, 0) + 1
-        if r.status != "na":
+        if r.status not in ("na", "unimpl"):
             total_by_cat[rule.category] += 1
         if r.status == "pass":
             pass_by_cat[rule.category] += 1
@@ -84,7 +84,7 @@ def run_audit(args, bench: Benchmark) -> int:
     if counts["fail"]:
         steps.append(("sudo lss-stig harden --dry-run", f"preview {counts['fail']} automatic fixes"))
         steps.append(("sudo lss-stig harden --confirm", "apply them · every change is journaled"))
-    if any("site value" in (r[3] or "") for r in rows):
+    if any(site.is_blocked(r[3]) for r in rows):
         steps.append(("sudo lss-stig site", "set the site values some rules are waiting on"))
     if not getattr(args, "verbose", False):
         steps.append(("sudo lss-stig audit -v", "list passing rules too"))
