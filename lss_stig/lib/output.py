@@ -22,10 +22,15 @@ def _c(code: str) -> str:
 
 
 def _refresh():
-    global RED, GREEN, YELLOW, BLUE, CYAN, GRAY, BOLD, DIM, RESET, CHROME
-    RED, GREEN, YELLOW = _c("31"), _c("32"), _c("33")
-    BLUE, CYAN, GRAY = _c("38;5;75"), _c("36"), _c("38;5;245")
-    CHROME = [_c("38;5;255"), _c("38;5;250"), _c("38;5;244")]   # wordmark rows, bright to dark
+    # Red, orange and white on black. The names are roles: GREEN = good/done
+    # (bright white), YELLOW = needs attention (orange), BLUE/CYAN = accent.
+    global RED, GREEN, YELLOW, BLUE, CYAN, GRAY, EMBER, BOLD, DIM, RESET, CHROME, PLATE
+    RED, GREEN, YELLOW = _c("38;5;196"), _c("1;38;5;231"), _c("38;5;214")
+    BLUE = CYAN = _c("38;5;208")
+    GRAY, EMBER = _c("38;5;250"), _c("38;5;124")      # body text; rules and tree lines
+    CHROME = [_c("38;5;231"), _c("38;5;214"), _c("38;5;196")]   # wordmark: white-hot to red
+    PLATE = {"CAT I": _c("1;38;5;231;48;5;160"), "CAT II": _c("1;38;5;16;48;5;208"),
+             "CAT III": _c("1;38;5;16;48;5;255"), "": _c("1;38;5;231;48;5;160")}
     BOLD, DIM, RESET = _c("1"), _c("2"), _c("0")
 
 
@@ -48,8 +53,8 @@ def banner(subtitle: str = "") -> None:
     tag = f"{YELLOW}owner build · unlicensed{RESET}" if _edition.EDITION == "owner" else ""
     width = _width()
     if _color:
-        side = [f"{GRAY}v{__version__}{RESET}", f"{BLUE}▌{RESET}{GRAY}DISA STIG{RESET}",
-                f"{GRAY}THE LINUX SECURITY SUITE{RESET}"]
+        side = [f"{GREEN}v{__version__}{RESET}", f"{RED}▌{RESET}{BOLD}DISA STIG{RESET}",
+                f"{BLUE}THE LINUX SECURITY SUITE{RESET}"]
         print()
         for row, shade, extra in zip(_WORDMARK, CHROME, side):
             print(f"  {shade}{BOLD}{row}{RESET}   {extra}")
@@ -59,11 +64,16 @@ def banner(subtitle: str = "") -> None:
         print(f"\n  LSS STIG  v{__version__}" + (f"  {tag}" if tag else ""))
     if subtitle:
         print(f"  {GRAY}{_clip(subtitle, width - 3)}{RESET}")
-    print(f"  {GRAY}{'─' * (width - 4)}{RESET}")
+    print(f"  {BLUE}▪{EMBER}{'━' * (width - 6)}{BLUE}▪{RESET}")
 
 
 def header(text: str) -> None:
-    print(f"\n  {BOLD}{text.upper()}{RESET}")
+    print(f"\n  {_plate(text.upper())}")
+
+
+def _plate(text: str, kind: str = "") -> str:
+    """A label on a solid color plate (color terminals), or bold text (plain)."""
+    return f"{PLATE[kind]} {text} {RESET}" if _color else f"{BOLD}{text}{RESET}"
 
 
 def info(msg: str) -> None:
@@ -167,17 +177,17 @@ def cascade(rows: list, verbose: bool = False) -> None:
         open_ = sum(1 for r in mine if r[2] in ("fail", "manual"))
         catc = globals()[_CAT_COLOR[cat]]
         tail = f" {len(mine)} rules · " + (f"{RED}{open_} open{RESET}" if open_ else f"{GREEN}clean{RESET}")
-        lead = f"  {catc}{BOLD}{cat}{RESET} "
-        rule_len = max(4, width - len(cat) - len(_strip(tail)) - 6)
-        print(f"\n{lead}{GRAY}{'─' * rule_len}{RESET}{tail}")
+        lead = f"  {_plate(cat, cat)} "
+        rule_len = max(4, width - len(_strip(lead)) - len(_strip(tail)) - 2)
+        print(f"\n{lead}{EMBER}{'━' * rule_len}{RESET}{tail}")
         areas: dict[str, list] = {}
         for r in sorted(mine, key=lambda r: (_ORDER.get(r[2], 9), r[0].vuln_id)):
             areas.setdefault(r[1], []).append(r)
         names = sorted(areas, key=lambda a: (min(_ORDER.get(r[2], 9) for r in areas[a]), a))
         for ai, area in enumerate(names):
             last_area = ai == len(names) - 1
-            print(f"  {GRAY}{'└─' if last_area else '├─'}{RESET} {BOLD}{area}{RESET}")
-            stem = "   " if last_area else f"{GRAY}│{RESET}  "
+            print(f"  {EMBER}{'└─' if last_area else '├─'}{RESET} {BOLD}{area}{RESET}")
+            stem = "   " if last_area else f"{EMBER}│{RESET}  "
             items = areas[area]
             shown = [r for r in items if verbose or r[2] in ("fail", "manual", "review")]
             folded = {s: 0 if verbose else sum(1 for r in items if r[2] == s) for s in ("pass", "na")}
@@ -195,9 +205,9 @@ def cascade(rows: list, verbose: bool = False) -> None:
                 lines.append((f"{GRAY}- {folded['na']} not applicable{RESET}", ""))
             for li, (head, detail) in enumerate(lines):
                 last = li == len(lines) - 1
-                print(f"  {stem}{GRAY}{'└─' if last else '├─'}{RESET} {head}")
+                print(f"  {stem}{EMBER}{'└─' if last else '├─'}{RESET} {head}")
                 if detail:
-                    pad = f"  {stem}{'   ' if last else GRAY + '│' + RESET + '  '}   "
+                    pad = f"  {stem}{'   ' if last else EMBER + '│' + RESET + '  '}   "
                     print(f"{pad}{DIM}{_clip(detail, width - 16)}{RESET}")
 
 
@@ -208,13 +218,13 @@ def _strip(s: str) -> str:
 def _bar(done: int, total: int, n_open: int, width: int = 28) -> str:
     f = round(width * done / total) if total else width
     col = GREEN if not n_open else YELLOW if done >= total * 0.8 else RED
-    return f"{col}{'█' * f}{GRAY}{'░' * (width - f)}{RESET}"
+    return f"{col}{'█' * f}{EMBER}{'░' * (width - f)}{RESET}"
 
 
 def summary(counts: dict[str, int], by_cat_open: dict[str, int],
             by_cat_total: dict[str, int] | None = None, by_cat_pass: dict[str, int] | None = None) -> None:
     width = _width()
-    print(f"\n  {BOLD}POSTURE{RESET} {GRAY}{'━' * (width - 12)}{RESET}")
+    print(f"\n  {_plate('POSTURE')} {EMBER}{'━' * (width - 14)}{RESET}")
     if by_cat_total:
         for cat in ("CAT I", "CAT II", "CAT III"):
             tot, ok = by_cat_total.get(cat, 0), (by_cat_pass or {}).get(cat, 0)
@@ -268,7 +278,7 @@ def tally(parts: list[tuple[str, str, int, str]]) -> None:
 def next_steps(steps: list[tuple[str, str]]) -> None:
     if not steps:
         return
-    print(f"\n  {BOLD}NEXT{RESET}")
+    print(f"\n  {_plate('NEXT')}")
     w = max(len(c) for c, _ in steps)
     for cmd, why in steps:
         if 3 + w + 3 + len(why) <= _width():
