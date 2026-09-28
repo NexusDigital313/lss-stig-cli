@@ -26,8 +26,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("-V", "--version", action="version", version=f"lss-stig {__version__}")
     p.add_argument("--no-color", action="store_true", help="disable colored output")
-    p.add_argument("--theme", choices=("default", "dod"),
-                   help="output style; dod = DISA-tool conventions (also LSS_STIG_THEME=dod)")
     p.add_argument("--benchmark", metavar="KEY", choices=sorted(benchmarks.SUPPORTED),
                    help="STIG benchmark (default: detected from the host)")
     sub = p.add_subparsers(dest="command", metavar="COMMAND")
@@ -98,16 +96,16 @@ def _run_license(args) -> int:
         return 0 if st.valid else 1
     else:
         st = license.check()
-    mark = f"{GREEN}●{RESET}" if st.valid else f"{RED}●{RESET}"
-    print(f"\n  {mark} {BOLD}{st.detail}{RESET}")
+    mark = f"{GREEN}VALID{RESET}" if st.valid else f"{RED}NOT LICENSED{RESET}"
+    print(f"\nLicense status: {mark} ({st.detail})")
     for label, val in (("Tier", st.tier), ("Licensee", st.licensee), ("Expires", st.expires),
                        ("Source", st.source), ("Host ID", license.host_id())):
         if val:
-            print(f"    {GRAY}{label:<9}{RESET} {val}")
+            print(f"  {label + ':':<10} {val}")
     if not st.valid:
-        print(f"\n  {GRAY}Free without a license: audit, checklists, harden --dry-run, rollback.{RESET}")
-        print(f"  {GRAY}Send `lss-stig license id` to get a license file, then:{RESET}")
-        print(f"  {GRAY}  sudo lss-stig license install <file.lic>{RESET}")
+        print("\nFree without a license: audit, checklists, harden --dry-run,\nrollback.")
+        print("To license this host, send the Host ID above, then run:")
+        print("  sudo lss-stig license install <file.lic>")
     print()
     return 0 if st.valid else 1
 
@@ -126,7 +124,7 @@ def _require_license() -> None:
 
 def _run_site(args) -> int:
     from lss_stig.lib import site
-    from lss_stig.lib.output import BOLD, GRAY, RESET, err, info
+    from lss_stig.lib.output import BOLD, GRAY, RESET, ascii_text, err, info
     if args.assign:
         if os.geteuid() != 0:
             err("setting site values needs root")
@@ -147,7 +145,7 @@ def _run_site(args) -> int:
         return 0
     print(f"  {GRAY}{site.SITE_CONF}{RESET}")
     for key, what in site.KEYS.items():
-        print(f"  {BOLD}{key:<20}{RESET} {site.get(key) or GRAY + '(not set)' + RESET}\n  {GRAY}{'':<20} {what}{RESET}")
+        print(f"  {BOLD}{key:<20}{RESET} {site.get(key) or GRAY + '(not set)' + RESET}\n  {GRAY}{'':<20} {ascii_text(what)}{RESET}")
     return 0
 
 
@@ -163,7 +161,7 @@ def _resolve_benchmark(args) -> str:
 
 
 def _run_list(args, bench) -> int:
-    from lss_stig.lib.output import BOLD, GRAY, GREEN, RESET
+    from lss_stig.lib.output import BOLD, GRAY, GREEN, RESET, ascii_text, cat_label
     from lss_stig.lib.registry import get_control, select_rules
     rules = select_rules(bench, None, args.cat)
     shown = 0
@@ -172,10 +170,10 @@ def _run_list(args, bench) -> int:
         if args.automated and c is None:
             continue
         tag = f"{GREEN}check+fix{RESET}" if c and c.fix else f"{GREEN}check{RESET}    " if c else f"{GRAY}manual{RESET}   "
-        print(f"  {r.category:<7} {BOLD}{r.vuln_id}{RESET} {GRAY}{r.stig_id}{RESET}  {tag}  {r.title}")
+        print(f"  {cat_label(r.category):<16} {BOLD}{r.vuln_id}{RESET} {GRAY}{r.stig_id}{RESET}  {tag}  {ascii_text(r.title)}")
         shown += 1
     auto = sum(1 for r in bench.rules if get_control(bench.key, r.vuln_id))
-    print(f"\n  {bench.label}: {len(bench.rules)} rules, {auto} automated · showing {shown}")
+    print(f"\n  {bench.label}: {len(bench.rules)} rules, {auto} automated, showing {shown}")
     return 0
 
 
@@ -238,8 +236,6 @@ def _survive_disconnect() -> None:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     from lss_stig.lib import output
-    if args.theme:
-        output.set_theme(args.theme)
     if args.no_color:
         output.disable_color()
     if not args.command:

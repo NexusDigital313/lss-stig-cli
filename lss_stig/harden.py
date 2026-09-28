@@ -35,7 +35,7 @@ def run_harden(args, bench: Benchmark) -> int:
         return 1
 
     host = distro.detect()
-    banner(f"{bench.label} · {'dry run — no changes' if dry_run else 'hardening'} · {host.name}")
+    banner(f"Host: {host.name} | {'dry run - no changes' if dry_run else 'hardening'}", bench)
 
     rules = [r for r in select_rules(bench, args.rule, args.cat, args.skip)
              if (c := get_control(bench.key, r.vuln_id)) is not None and c.fix is not None]
@@ -105,7 +105,7 @@ def run_harden(args, bench: Benchmark) -> int:
                 pass
             after = evaluate(bench, rule)
             if after.status == "pass":
-                output.step("✓", "GREEN", rule, f"fixed · was: {before.detail}")
+                output.step("✓", "GREEN", rule, f"was: {before.detail}")
                 syslog.info(f"harden run_id={run_id} rule={rule.vuln_id} status=fixed")
                 fixed += 1
             else:

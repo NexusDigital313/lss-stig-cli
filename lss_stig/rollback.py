@@ -159,7 +159,7 @@ def run_rollback(args) -> int:
                 ok, msg = _restore_backup(control_id, backup, path, None if path in restored else run_ts)
                 restored.add(path)
                 if ok:
-                    print(f"{GREEN}  ✓{RESET} {control_id}   {msg}")
+                    print(f"  {GREEN}{'Reverted':<11}{RESET} {control_id}   {msg}")
                     did_something = True
                 else:
                     err(f"  {control_id}   {msg}")
@@ -169,7 +169,7 @@ def run_rollback(args) -> int:
             for argv in undo:
                 ok, msg = _run_undo(control_id, argv)
                 if ok:
-                    print(f"{GREEN}  ✓{RESET} {control_id}   {action} {DIM}({msg}){RESET}")
+                    print(f"  {GREEN}{'Reverted':<11}{RESET} {control_id}   {action} {DIM}({msg}){RESET}")
                     did_something = True
                 else:
                     err(f"  {control_id}   undo failed: {msg}")

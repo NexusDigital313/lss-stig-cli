@@ -58,10 +58,11 @@ lss-stig list [--cat I] [--automated]
 Audit exits `1` when any finding is open, `0` otherwise. Add `-v` to list
 passing and not-applicable rules too.
 
-`--theme dod` (or `LSS_STIG_THEME=dod`) switches to DISA-tool conventions:
-the 8 standard terminal colors only, no banner art, STIG Viewer status words
-(Open, Not a Finding, Not Reviewed, Not Applicable) and CAT I (High) style
-severities. `--no-color` and piped output are plain text in either theme.
+Output follows DISA tool conventions: STIG Viewer status words (Open, Not a
+Finding, Not Reviewed, Not Applicable, the same values written to the
+`.cklb`), CAT I (High) / CAT II (Medium) / CAT III (Low) severities, plain
+ASCII layout and the eight standard terminal colors, never as the only
+signal. `--no-color` and piped output are plain text.
 
 ## License
 

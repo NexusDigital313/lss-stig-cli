@@ -35,7 +35,7 @@ def run_audit(args, bench: Benchmark) -> int:
 
     if not json_mode:
         automated = sum(1 for r in rules if get_control(bench.key, r.vuln_id))
-        banner(f"{bench.label} · {distro.detect().name} · {len(rules)} rules ({automated} automated) · read-only")
+        banner(f"Host: {distro.detect().name} | {len(rules)} rules ({automated} automated) | read-only", bench)
 
     results: dict[str, dict] = {}
     rows = []
@@ -83,11 +83,11 @@ def run_audit(args, bench: Benchmark) -> int:
     steps = []
     if counts["fail"]:
         steps.append(("sudo lss-stig harden --dry-run", f"preview {counts['fail']} automatic fixes"))
-        steps.append(("sudo lss-stig harden --confirm", "apply them · every change is journaled"))
+        steps.append(("sudo lss-stig harden --confirm", "apply them; every change is journaled"))
     if any(site.is_blocked(r[3]) for r in rows):
         steps.append(("sudo lss-stig site", "set the site values some rules are waiting on"))
     if not getattr(args, "verbose", False):
-        steps.append(("sudo lss-stig audit -v", "list passing rules too"))
+        steps.append(("sudo lss-stig audit -v", "also list Not a Finding and Not Applicable rules"))
     output.next_steps(steps)
     print()
     return 1 if counts["fail"] or counts["manual"] else 0

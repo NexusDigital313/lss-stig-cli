@@ -1,8 +1,15 @@
 """Terminal output — standard library only.
 
+Follows DISA tool conventions (STIG Viewer, SCC, Evaluate-STIG): plain ASCII
+structure, the eight standard ANSI colors and never color alone, STIG Viewer
+status words (Open, Not a Finding, Not Reviewed, Not Applicable) and
+CAT I (High) / CAT II (Medium) / CAT III (Low) severities. Hardened hosts are
+often reached over serial consoles and their output ends up in evidence
+packages, so everything reads the same with color off.
+
 STIG'd hosts are frequently air-gapped with no PyPI access, so lss-stig has
-no third-party runtime dependencies. Color is plain ANSI, auto-disabled when
-stdout is not a TTY, when NO_COLOR is set, or with --no-color.
+no third-party runtime dependencies. Color is auto-disabled when stdout is
+not a TTY, when NO_COLOR is set, or with --no-color.
 """
 
 from __future__ import annotations
@@ -15,9 +22,6 @@ import sys
 from lss_stig import __version__
 
 _color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
-# "default": the LSS look. "dod": DISA-tool conventions — 8 standard colors,
-# no wordmark or plates, STIG Viewer status words, CAT I (High) severities.
-_theme = "dod" if os.environ.get("LSS_STIG_THEME", "").lower() == "dod" else "default"
 
 
 def _c(code: str) -> str:
@@ -25,41 +29,13 @@ def _c(code: str) -> str:
 
 
 def _refresh():
-    # Red, orange and white on black. The names are roles: GREEN = good/done
-    # (bright white), YELLOW = needs attention (orange), BLUE/CYAN = accent.
-    global RED, GREEN, YELLOW, BLUE, CYAN, GRAY, EMBER, BOLD, DIM, RESET, CHROME, PLATE
-    RED, GREEN, YELLOW = _c("38;5;196"), _c("1;38;5;231"), _c("38;5;214")
-    BLUE = CYAN = _c("38;5;208")
-    GRAY, EMBER = _c("38;5;250"), _c("38;5;124")      # body text; rules and tree lines
-    CHROME = [_c("38;5;231"), _c("38;5;214"), _c("38;5;196")]   # wordmark: white-hot to red
-    PLATE = {"CAT I": _c("1;38;5;231;48;5;160"), "CAT II": _c("1;38;5;16;48;5;208"),
-             "CAT III": _c("1;38;5;16;48;5;255"), "": _c("1;38;5;231;48;5;160")}
+    global RED, GREEN, YELLOW, BLUE, CYAN, GRAY, BOLD, DIM, RESET
+    RED, GREEN, YELLOW, CYAN = _c("31"), _c("32"), _c("33"), _c("36")
+    BLUE, GRAY = CYAN, ""
     BOLD, DIM, RESET = _c("1"), _c("2"), _c("0")
-    if _theme == "dod":
-        RED, GREEN, YELLOW = _c("31"), _c("32"), _c("33")
-        BLUE = CYAN = _c("36")
-        GRAY = EMBER = ""
-        CHROME = ["", "", ""]
 
 
 _refresh()
-
-
-def set_theme(name: str) -> None:
-    global _theme
-    _theme = name
-    _refresh()
-
-
-def _dod() -> bool:
-    return _theme == "dod"
-
-
-_SEVERITY = {"CAT I": "High", "CAT II": "Medium", "CAT III": "Low"}
-
-
-def cat_label(cat: str) -> str:
-    return f"{cat} ({_SEVERITY[cat]})" if _dod() and cat in _SEVERITY else cat
 
 
 def disable_color() -> None:
@@ -68,66 +44,58 @@ def disable_color() -> None:
     _refresh()
 
 
-_WORDMARK = ("█   █▀▀ █▀▀   █▀▀ ▀█▀ █ █▀▀▀",
-             "█   ▀▀█ ▀▀█   ▀▀█  █  █ █ ▀█",
-             "▀▀▀ ▀▀▀ ▀▀▀   ▀▀▀  ▀  ▀ ▀▀▀▀")
+SEVERITY = {"CAT I": "High", "CAT II": "Medium", "CAT III": "Low"}
+
+# STIG Viewer status words, matching the .cklb this tool writes (checklist.CKLB_STATUS).
+STATUS = {
+    "pass":   ("Not a Finding", "GREEN"),
+    "fail":   ("Open", "RED"),
+    "manual": ("Open", "RED"),
+    "review": ("Not Reviewed", "YELLOW"),
+    "na":     ("Not Applicable", ""),
+    "unimpl": ("Not Reviewed", ""),
+}
+_STATUS_W = 14
+_CAT_COLOR = {"CAT I": "RED", "CAT II": "YELLOW", "CAT III": ""}
 
 
-def banner(subtitle: str = "") -> None:
+def _col(name: str) -> str:
+    return globals()[name] if name else ""
+
+
+def cat_label(cat: str) -> str:
+    return f"{cat} ({SEVERITY[cat]})" if cat in SEVERITY else cat
+
+
+def banner(subtitle: str = "", bench=None) -> None:
     from lss_stig import _edition
-    tag = f"{YELLOW}owner build · unlicensed{RESET}" if _edition.EDITION == "owner" else ""
     width = _width()
-    if _color and not _dod():
-        side = [f"{GREEN}v{__version__}{RESET}", f"{RED}▌{RESET}{BOLD}DISA STIG{RESET}",
-                f"{BLUE}THE LINUX SECURITY SUITE{RESET}"]
-        print()
-        for row, shade, extra in zip(_WORDMARK, CHROME, side):
-            print(f"  {shade}{BOLD}{row}{RESET}   {extra}")
-        if tag:
-            print(f"  {tag}")
-    else:
-        print(f"\n  LSS STIG  v{__version__}" + (f"  {tag}" if tag else ""))
+    print(f"\n{BOLD}LSS STIG {__version__}{RESET}"
+          + (f"  {YELLOW}OWNER BUILD - UNLICENSED{RESET}" if _edition.EDITION == "owner" else ""))
+    if bench is not None:
+        print(_clip(bench.stig_name, width))
+        print(_clip(f"Version {bench.version}, {bench.release_info}", width))
     if subtitle:
-        print(f"  {GRAY}{_clip(subtitle, width - 3)}{RESET}")
-    if _dod():
-        print(f"  {'─' * (width - 4)}")
-    else:
-        print(f"  {BLUE}▪{EMBER}{'━' * (width - 6)}{BLUE}▪{RESET}")
+        print(_clip(subtitle, width))
+    print("=" * width)
 
 
 def header(text: str) -> None:
-    print(f"\n  {_plate(text.upper())}")
-
-
-def _plate(text: str, kind: str = "") -> str:
-    """A label on a solid color plate (color terminals), or bold text (plain)."""
-    return f"{PLATE[kind]} {text} {RESET}" if _color and not _dod() else f"{BOLD}{text}{RESET}"
+    print(f"\n{BOLD}{text.upper()}{RESET}\n{'-' * _width()}")
 
 
 def info(msg: str) -> None:
-    print(f"{CYAN}::{RESET} {msg}")
+    print(f"INFO: {ascii_text(msg)}")
 
 
 def warn(msg: str) -> None:
     progress_done()
-    print(f"{YELLOW}!!{RESET} {msg}", file=sys.stderr)
+    print(f"{YELLOW}WARNING:{RESET} {ascii_text(msg)}", file=sys.stderr)
 
 
 def err(msg: str) -> None:
     progress_done()
-    print(f"{RED}error:{RESET} {msg}", file=sys.stderr)
-
-
-_SYMBOL = {
-    "pass":   ("✓", "GREEN"),
-    "fail":   ("✗", "RED"),
-    "manual": ("◐", "YELLOW"),
-    "review": ("?", "YELLOW"),
-    "na":     ("-", "GRAY"),
-    "unimpl": ("·", "GRAY"),
-}
-
-_CAT_COLOR = {"CAT I": "RED", "CAT II": "YELLOW", "CAT III": "GRAY"}
+    print(f"{RED}ERROR:{RESET} {ascii_text(msg)}", file=sys.stderr)
 
 
 def _short(title: str, width: int = 78) -> str:
@@ -136,32 +104,44 @@ def _short(title: str, width: int = 78) -> str:
     if title.startswith("Ubuntu 24.04 LTS"):
         title = title[len("Ubuntu 24.04 LTS"):].lstrip(" ,")
         title = title[:1].upper() + title[1:]
-    return title if len(title) <= width else title[: width - 1] + "…"
+    return _clip(title, width)
 
 
 def _width() -> int:
     return max(60, min(shutil.get_terminal_size((100, 24)).columns, 120))
 
 
+_ASCII = str.maketrans({"—": "-", "–": "-", "→": "->", "…": "...", "·": "|", "≤": "<=", "≥": ">=", "\u00a0": " ",
+                        "‘": "'", "’": "'", "“": '"', "”": '"'})
+
+
+def ascii_text(text: str) -> str:
+    """Screen text is plain ASCII, so it survives serial consoles and evidence logs."""
+    return text.translate(_ASCII).encode("ascii", "replace").decode()
+
+
 def _clip(text: str, room: int) -> str:
-    return text if len(text) <= room else text[: max(room - 1, 1)] + "…"
+    text = ascii_text(text)
+    return text if len(text) <= room else text[: max(room - 3, 1)] + "..."
+
+
+def _strip(s: str) -> str:
+    return re.sub(r"\033\[[0-9;]*m", "", s)
 
 
 # ---- progress (TTY only; nothing on a pipe or in a log) ----------------------
 
-def progress(i: int, n: int, label: str) -> None:
-    cols = shutil.get_terminal_size((100, 24)).columns
-    if not _live() or cols < 60:
-        return
-    filled = round(24 * i / n) if n else 24
-    line = f"  {GRAY}auditing{RESET} {BLUE}{'━' * filled}{GRAY}{'─' * (24 - filled)}{RESET} {i:>3}/{n}  {GRAY}{label}{RESET}"
-    sys.stdout.write("\r\033[K" + line)
-    sys.stdout.flush()
-    global _progress_shown
-    _progress_shown = True
-
-
 _progress_shown = False
+
+
+def progress(i: int, n: int, label: str) -> None:
+    global _progress_shown
+    if not (_color and sys.stdout.isatty()) or shutil.get_terminal_size((100, 24)).columns < 60:
+        return
+    filled = round(20 * i / n) if n else 20
+    sys.stdout.write(f"\r\033[KAuditing [{'#' * filled}{'-' * (20 - filled)}] {i:>3}/{n}  {label}")
+    sys.stdout.flush()
+    _progress_shown = True
 
 
 def progress_done() -> None:
@@ -173,11 +153,7 @@ def progress_done() -> None:
         _progress_shown = False
 
 
-def _live() -> bool:
-    return _color and sys.stdout.isatty()
-
-
-# ---- the cascade: category → area → finding → evidence ------------------------
+# ---- findings: category → area → finding → evidence --------------------------
 
 AREAS = {
     "ssh": "SSH", "auth": "Accounts & authentication", "audit": "Audit logging",
@@ -193,114 +169,96 @@ def area_of(control) -> str:
     return AREAS.get(mod.rsplit(".", 1)[-1], "Other") if control else "Not automated"
 
 
+def _status(status: str) -> str:
+    word, color = STATUS.get(status, ("Open", "RED"))
+    return f"{_col(color)}{word:<{_STATUS_W}}{RESET}"
+
+
 def cascade(rows: list, verbose: bool = False) -> None:
-    """rows: (rule, area, status, detail). Open and review items are always
-    listed with their reason; passing / n/a rules fold into one count per area
-    unless verbose."""
+    """rows: (rule, area, status, detail). Open and Not Reviewed items are
+    always listed with their reason; Not a Finding / Not Applicable rules fold
+    into one count per area unless verbose."""
     width = _width()
     for cat in ("CAT I", "CAT II", "CAT III"):
         mine = [r for r in rows if r[0].category == cat and (verbose or r[2] != "unimpl")]
         if not mine:
             continue
         open_ = sum(1 for r in mine if r[2] in ("fail", "manual"))
-        catc = globals()[_CAT_COLOR[cat]]
-        tail = f" {len(mine)} rules · " + (f"{RED}{open_} open{RESET}" if open_ else f"{GREEN}clean{RESET}")
-        if _dod():
-            lead = f"  {catc}{BOLD}{cat_label(cat)}{RESET} "
-            rule = "─"
-        else:
-            lead, rule = f"  {_plate(cat, cat)} ", "━"
-        rule_len = max(4, width - len(_strip(lead)) - len(_strip(tail)) - 2)
-        print(f"\n{lead}{EMBER}{rule * rule_len}{RESET}{tail}")
+        lead = f"{_col(_CAT_COLOR[cat])}{BOLD}{cat_label(cat)}{RESET}"
+        tail = f"{len(mine)} rules | " + (f"{RED}{open_} Open{RESET}" if open_ else f"{GREEN}0 Open{RESET}")
+        print(f"\n{lead} {'-' * max(4, width - len(_strip(lead)) - len(_strip(tail)) - 2)} {tail}")
         areas: dict[str, list] = {}
         for r in sorted(mine, key=lambda r: (_ORDER.get(r[2], 9), r[0].vuln_id)):
             areas.setdefault(r[1], []).append(r)
-        names = sorted(areas, key=lambda a: (min(_ORDER.get(r[2], 9) for r in areas[a]), a))
-        for ai, area in enumerate(names):
-            last_area = ai == len(names) - 1
-            print(f"  {EMBER}{'└─' if last_area else '├─'}{RESET} {BOLD}{area}{RESET}")
-            stem = "   " if last_area else f"{EMBER}│{RESET}  "
+        for area in sorted(areas, key=lambda a: (min(_ORDER.get(r[2], 9) for r in areas[a]), a)):
+            print(f"  {BOLD}{area}{RESET}")
             items = areas[area]
-            shown = [r for r in items if verbose or r[2] in ("fail", "manual", "review")]
-            folded = {s: 0 if verbose else sum(1 for r in items if r[2] == s) for s in ("pass", "na")}
-            lines: list[tuple[str, str]] = []
-            for rule, _, status, detail in shown:
-                sym, color = _SYMBOL.get(status, ("✗", "RED"))
-                col = globals()[color]
-                head = f"{col}{sym}{RESET} {BOLD}{rule.vuln_id}{RESET} {GRAY}{rule.stig_id}{RESET}  "
-                room = width - 8 - len(_strip(head))
-                head += _clip(_short(rule.title, 200), room)
-                lines.append((head, detail))
-            if folded["pass"]:
-                lines.append((f"{GREEN}✓{RESET} {GRAY}{folded['pass']} passing{RESET}", ""))
-            if folded["na"]:
-                lines.append((f"{GRAY}- {folded['na']} not applicable{RESET}", ""))
-            for li, (head, detail) in enumerate(lines):
-                last = li == len(lines) - 1
-                print(f"  {stem}{EMBER}{'└─' if last else '├─'}{RESET} {head}")
+            for rule, _, status, detail in items:
+                if not verbose and status in ("pass", "na"):
+                    continue
+                head = f"    {_status(status)}  {BOLD}{rule.vuln_id}{RESET}  {rule.stig_id}  "
+                print(head + _short(rule.title, width - len(_strip(head))))
                 if detail:
-                    pad = f"  {stem}{'   ' if last else EMBER + '│' + RESET + '  '}   "
-                    print(f"{pad}{DIM}{_clip(detail, width - 16)}{RESET}")
+                    print(f"{' ' * (6 + _STATUS_W)}{DIM}{_clip(detail, width - 6 - _STATUS_W)}{RESET}")
+            if not verbose:
+                for s in ("pass", "na"):
+                    n = sum(1 for r in items if r[2] == s)
+                    if n:
+                        print(f"    {_status(s)}  {n} rule{'s' if n != 1 else ''}")
 
 
-def _strip(s: str) -> str:
-    return re.sub(r"\033\[[0-9;]*m", "", s)
-
-
-def _bar(done: int, total: int, n_open: int, width: int = 28) -> str:
+def _bar(done: int, total: int, n_open: int, width: int = 20) -> str:
     f = round(width * done / total) if total else width
     col = GREEN if not n_open else YELLOW if done >= total * 0.8 else RED
-    full, empty = ("#", "-") if _dod() else ("█", "░")
-    return f"{col}{full * f}{EMBER}{empty * (width - f)}{RESET}"
+    return f"[{col}{'#' * f}{RESET}{'-' * (width - f)}]"
 
 
 def summary(counts: dict[str, int], by_cat_open: dict[str, int],
             by_cat_total: dict[str, int] | None = None, by_cat_pass: dict[str, int] | None = None) -> None:
     width = _width()
-    if _dod():
-        print(f"\n  {BOLD}POSTURE{RESET} {'─' * (width - 12)}")
-    else:
-        print(f"\n  {_plate('POSTURE')} {EMBER}{'━' * (width - 14)}{RESET}")
+    print(f"\n{BOLD}SUMMARY{RESET}\n{'-' * width}")
     if by_cat_total:
+        bar_w = max(6, min(20, width - 42))
+        print(f"  {'Severity':<16}{'Progress':<{bar_w + 3}}{'Not a Finding':<15}Open")
         for cat in ("CAT I", "CAT II", "CAT III"):
             tot, ok = by_cat_total.get(cat, 0), (by_cat_pass or {}).get(cat, 0)
             if not tot:
                 continue
             n_open = by_cat_open.get(cat, 0)
-            catc = globals()[_CAT_COLOR[cat]]
-            note = f"{RED}{n_open} open{RESET}" if n_open else f"{GREEN}no open findings{RESET}"
-            label = cat_label(cat)
-            lw = 15 if _dod() else 8
-            bar_w = max(8, min(28, width - lw - 34))
-            print(f"   {catc}{label:<{lw}}{RESET} {_bar(ok, tot, n_open, bar_w)}  {ok:>3}/{tot:<3}  {note}")
+            open_col = RED if n_open else GREEN
+            print(f"  {_col(_CAT_COLOR[cat])}{cat_label(cat):<16}{RESET}{_bar(ok, tot, n_open, bar_w)} "
+                  f"{f'{ok}/{tot}':<15}{open_col}{n_open}{RESET}")
         print()
     fixable, need = counts.get("fail", 0), counts.get("manual", 0)
-    words = (("Not a Finding", "Open", "Not Reviewed", "Not Applicable") if _dod()
-             else ("not a finding", "open", "need review", "n/a"))
-    _flow("   ", [f"{GREEN}✓{RESET} {counts.get('pass', 0)} {words[0]}",
-                  f"{RED}✗{RESET} {fixable + need} {words[1]} {GRAY}({fixable} auto-fixable){RESET}",
-                  f"{YELLOW}?{RESET} {counts.get('review', 0)} {words[2]}",
-                  f"{GRAY}- {counts.get('na', 0)} {words[3]}{RESET}"])
-    if counts.get("unimpl"):
-        print(f"   {GRAY}· {counts['unimpl']} not reviewed (no automated check){RESET}")
+    _flow("  ", [f"{GREEN}Not a Finding:{RESET} {counts.get('pass', 0)}",
+                 f"{RED}Open:{RESET} {fixable + need} ({fixable} auto-fixable)",
+                 f"{YELLOW}Not Reviewed:{RESET} {counts.get('review', 0) + counts.get('unimpl', 0)}",
+                 f"Not Applicable: {counts.get('na', 0)}"])
     if by_cat_open.get("CAT I"):
-        print(f"\n   {RED}{BOLD}CAT I open — these block an ATO until closed or accepted.{RESET}")
+        print(f"\n  {RED}{BOLD}CAT I findings are Open.{RESET}\n"
+              f"  {RED}{BOLD}Close or formally accept them before an ATO.{RESET}")
+
+
+# harden/rollback step outcomes — word first, like the status column
+_STEP = {"→": ("Would fix", "YELLOW"), "✓": ("Fixed", "GREEN"), "◐": ("Still Open", "YELLOW"),
+         "✗": ("Error", "RED"), "↺": ("Reverted", "GREEN")}
 
 
 def step(sym: str, color: str, rule, detail: str = "") -> None:
-    """One live harden/rollback line, with its outcome cascading underneath."""
+    """One live harden/rollback line, with its outcome underneath."""
     width = _width()
-    col = globals()[color]
-    catc = globals()[_CAT_COLOR.get(rule.category, "GRAY")]
-    print(f"  {col}{sym}{RESET} {BOLD}{rule.vuln_id}{RESET} {catc}{rule.category:<7}{RESET} "
-          f"{_clip(_short(rule.title, 200), width - 30)}")
+    word, wcolor = _STEP.get(sym, (sym, color))
+    head = f"  {_col(wcolor)}{word:<11}{RESET} {BOLD}{rule.vuln_id}{RESET}  {rule.category:<7}  "
+    print(head + _short(rule.title, width - len(_strip(head))))
     if detail:
-        print(f"    {GRAY}└{RESET} {DIM}{_clip(detail, width - 8)}{RESET}")
+        print(f"{' ' * 14}{DIM}{_clip(detail, width - 14)}{RESET}")
 
 
-def _flow(indent: str, parts: list[str]) -> None:
+def _flow(indent: str, parts: list[str], lead: str = "") -> None:
     """Print parts separated by three spaces, wrapping between parts at the terminal width."""
     room, line = _width() - len(indent), ""
+    if lead:
+        print(lead, end="")
     for part in parts:
         if line and len(_strip(line)) + 3 + len(_strip(part)) > room:
             print(indent + line)
@@ -312,17 +270,18 @@ def _flow(indent: str, parts: list[str]) -> None:
 
 def tally(parts: list[tuple[str, str, int, str]]) -> None:
     print()
-    _flow("  ", [f"{globals()[c]}{s}{RESET} {BOLD}{n}{RESET} {GRAY}{label}{RESET}"
-                 for s, c, n, label in parts if n or c != "GRAY"])
+    _flow("  ", [f"{_col(c) if c != 'GRAY' else ''}{label[:1].upper() + label[1:]}:{RESET} {n}"
+                 for _, c, n, label in parts if n or c != "GRAY"])
 
 
 def next_steps(steps: list[tuple[str, str]]) -> None:
     if not steps:
         return
-    print(f"\n  {_plate('NEXT')}")
+    print(f"\n{BOLD}NEXT STEPS{RESET}")
+    steps = [(c, ascii_text(why)) for c, why in steps]
     w = max(len(c) for c, _ in steps)
     for cmd, why in steps:
-        if 3 + w + 3 + len(why) <= _width():
-            print(f"   {CYAN}{cmd:<{w}}{RESET}   {GRAY}{why}{RESET}")
+        if 2 + w + 3 + len(why) <= _width():
+            print(f"  {CYAN}{cmd:<{w}}{RESET}   {why}")
         else:
-            print(f"   {CYAN}{cmd}{RESET}\n     {GRAY}{_clip(why, _width() - 5)}{RESET}")
+            print(f"  {CYAN}{cmd}{RESET}\n      {_clip(why, _width() - 6)}")
