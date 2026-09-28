@@ -47,7 +47,7 @@ def banner(subtitle: str = "") -> None:
 
 
 def header(text: str) -> None:
-    print(f"\n{BOLD}{BLUE}{text}{RESET}")
+    print(f"\n  {BOLD}{text.upper()}{RESET}")
 
 
 def info(msg: str) -> None:
