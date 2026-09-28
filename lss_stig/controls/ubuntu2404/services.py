@@ -6,7 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from lss_stig.lib import keyval, pkg, sshd, systemd
+from lss_stig.lib import keyval, pkg, site, sshd, systemd
 from lss_stig.lib.registry import CheckResult, Control, RollbackEntry, register
 
 B = "ubuntu2404_v1r6"
@@ -103,7 +103,18 @@ def _check_ufw() -> CheckResult:
 def _limit_ssh() -> list[RollbackEntry]:
     out = []
     added = _ufw("show", "added").stdout
+    mgmt = site.get("ssh_allow_from")
     for port in sshd.ports():
+        # `limit` refuses a source after 6 new connections in 30 s — and a
+        # retrying client's SYN retransmits keep refreshing that window, so
+        # automation (Ansible, monitoring) or admins behind one NAT lock
+        # themselves out. A management network is allowed ahead of the limit.
+        allow = f"allow proto tcp from {mgmt} to any port {port}"
+        if mgmt and f"ufw {allow}" not in added:
+            r = _ufw("insert", "1", *allow.split())
+            if r.returncode != 0:
+                raise RuntimeError(f"ufw {allow}: {r.stderr.strip()}")
+            out.append(RollbackEntry(action=f"ufw {allow}", undo=[["ufw", "delete", *allow.split()]]))
         rule = f"limit {port}/tcp"
         if f"ufw {rule}" in added:
             continue
@@ -126,7 +137,8 @@ def _fix_ufw() -> list[RollbackEntry]:
 
 
 register(B, Control("V-270655", _check_ufw, _fix_ufw,
-                    impact="turns the firewall on: inbound traffic other than SSH (rate-limited) is blocked"))
+                    impact="turns the firewall on: only SSH is allowed in, and a source opening more than 5 new SSH "
+                           "connections in 30 s is refused — exempt automation with `lss-stig site ssh_allow_from=<cidr>`"))
 
 
 _LOOPBACK = re.compile(r"^(127\.|\[?::1\]?|\[?::ffff:127\.)")

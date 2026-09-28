@@ -22,6 +22,7 @@ KEYS = {
     "time_server": "authoritative (DOD) NTP server chrony must use — V-270751",
     "audit_remote_server": "host that receives audit records via audisp-remote — V-270658",
     "admin_email": "SA/ISSO address for audit alerts — V-270818, V-270819",
+    "ssh_allow_from": "optional management IP/CIDR exempt from the SSH rate limit — V-270655, V-270754",
 }
 
 _HOST = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$")
@@ -44,6 +45,12 @@ def validate(key: str, value: str) -> str:
         return f"unknown key (known: {', '.join(KEYS)})"
     if key == "admin_email":
         return "" if _EMAIL.match(value) else "not an email address"
+    if key == "ssh_allow_from":
+        try:
+            ipaddress.ip_network(value, strict=False)
+            return ""
+        except ValueError:
+            return "not an IP address or CIDR (e.g. 10.20.0.0/24)"
     if not _HOST.match(value):
         return "not a hostname or IP address"
     if key == "audit_remote_server" and is_local(value):
