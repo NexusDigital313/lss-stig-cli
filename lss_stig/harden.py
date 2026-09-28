@@ -129,7 +129,7 @@ def run_harden(args, bench: Benchmark) -> int:
 
     jpath = journal.write_run(run_id, entries)
     journal.set_current_run_id(None)
-    output.tally([("✓", "GREEN", fixed, "fixed"), ("◐", "YELLOW", still_open, "still open"),
+    output.tally([("✓", "GREEN", fixed, "fixed"), ("◐", "YELLOW", still_open, "still Open"),
                   ("✗", "RED", errors, "errors"), ("·", "GRAY", skipped, "skipped")]
                  + ([("-", "GRAY", declined, "declined")] if interactive else []))
     syslog.info(f"harden done run_id={run_id} fixed={fixed} open={still_open} errors={errors}")
