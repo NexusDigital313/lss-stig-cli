@@ -42,7 +42,36 @@ def _build_env() -> dict[str, str]:
     }
 
 
-_PKG_TIMEOUT = 300  # apt-get / dnf install or remove
+# Package operations are never timed out: killing apt mid-dpkg leaves the
+# package database "interrupted" and every later install fails until someone
+# runs `dpkg --configure -a` (found on a real 24.04 VM, where aide-common's
+# postinst outran a 300 s timeout). Instead apt waits up to 10 min for the
+# dpkg lock — a freshly booted cloud host is usually mid unattended-upgrade.
+_APT_OPTS = ["-o", "DPkg::Lock::Timeout=600"]
+
+
+def dpkg_interrupted() -> str:
+    """Non-empty (dpkg --audit output) if the package database needs repair."""
+    if not distro.is_debian_family():
+        return ""
+    r = subprocess.run(["dpkg", "--audit"], capture_output=True, text=True)
+    return r.stdout.strip()
+
+
+def _run(cmd: list[str]) -> None:
+    if distro.is_debian_family() and (bad := dpkg_interrupted()):
+        raise RuntimeError("dpkg is in an interrupted state — run `sudo dpkg --configure -a` first "
+                           f"({bad.splitlines()[0]})")
+    r = subprocess.run(cmd, capture_output=True, text=True, env=_build_env())
+    if r.returncode != 0:
+        raise RuntimeError(f"{' '.join(cmd)} failed: {(r.stderr or r.stdout).strip()[-400:]}")
+
+
+def _dpkg_installed() -> set[str]:
+    """Names of packages dpkg considers installed (arch qualifier dropped)."""
+    r = subprocess.run(["dpkg-query", "-W", "-f=${db:Status-Abbrev} ${Package}\n"],
+                       capture_output=True, text=True)
+    return {l.split()[1] for l in r.stdout.splitlines() if l.startswith("ii") and len(l.split()) > 1}
 
 
 def is_installed(pkg: str) -> bool:
@@ -66,43 +95,78 @@ def is_installed(pkg: str) -> bool:
     return False
 
 
-def install(pkg: str) -> list[RollbackEntry]:
-    """Install `pkg`. Returns a RollbackEntry whose undo purges the package.
+_lists_refreshed = False
+
+
+def _no_candidate(pkgs: list[str]) -> list[str]:
+    """Packages apt has no installation candidate for in its current lists."""
+    r = subprocess.run(["apt-cache", "policy", *pkgs], capture_output=True, text=True, env=_build_env())
+    have = set()
+    name = None
+    for line in r.stdout.splitlines():
+        if not line.startswith(" ") and line.endswith(":"):
+            name = line[:-1]
+        elif name and line.strip().startswith("Candidate:") and line.split(":", 1)[1].strip() != "(none)":
+            have.add(name)
+    return [p for p in pkgs if p not in have]
+
+
+def _ensure_candidates(pkgs: list[str]) -> None:
+    # Package lists can lag the sources (seen on a 24.04 cloud image: universe
+    # enabled in ubuntu.sources but never fetched, so vlock "couldn't be
+    # located"). Refresh once per run, then fail with the likely cause.
+    global _lists_refreshed
+    if not (missing := _no_candidate(pkgs)):
+        return
+    if not _lists_refreshed:
+        _run(["apt-get", *_APT_OPTS, "update"])
+        _lists_refreshed = True
+        if not (missing := _no_candidate(pkgs)):
+            return
+    raise RuntimeError(f"apt has no installation candidate for {' '.join(missing)} even after "
+                       "`apt-get update` — check the host's apt sources (on Ubuntu these packages "
+                       "may need the universe component enabled)")
+
+
+def install(*pkgs: str) -> list[RollbackEntry]:
+    """Install the packages not already present, in one transaction. Returns a
+    RollbackEntry whose undo purges exactly those packages.
 
     Uses `purge` (not `remove`) on the undo path because lss-stig just installed
-    the package — its config files were created by the package install,
+    the packages — their config files were created by the package install,
     not by the customer, so rollback should clean them up rather than
     leave litter under /etc/<pkg>/.
 
-    No-op if already installed, or if the distro family is neither Debian
+    No-op if all are installed, or if the distro family is neither Debian
     nor RHEL (returns an empty list so the caller can surface a no-op).
 
-    NOTE: rollback removes only the named package, not the dependencies
-    that were pulled in transitively. On Debian, those dependencies remain
-    marked as manually-installed (because the install was non-interactive)
-    and won't be `apt autoremove`d unless the operator runs that explicitly.
-    A snapshot-and-diff dpkg approach is planned for a future release.
+    On Debian the undo also purges every dependency the install pulled in
+    (dpkg snapshot before/after): purging only the named package left e.g.
+    libnss-sss behind on a real 24.04 VM, and with it `sss` in nsswitch.conf.
+    `apt autoremove` is deliberately not used — it would also remove packages
+    that were already autoremovable before lss-stig ran.
     """
-    if is_installed(pkg):
+    todo = [p for p in pkgs if not is_installed(p)]
+    if not todo:
         return []
     if distro.is_debian_family():
-        cmd = ["apt-get", "install", "-y", pkg]
-        undo = [["apt-get", "purge", "-y", pkg]]
+        _ensure_candidates(todo)
+        # No recommends: a STIG box should get exactly what the rule asks for
+        # (aide-common recommends a mailer, which would drag postfix onto the
+        # host). Callers name any recommended package the rule actually needs.
+        before = _dpkg_installed()
+        _run(["apt-get", *_APT_OPTS, "install", "-y", "--no-install-recommends", *todo])
+        new = sorted((_dpkg_installed() - before) | set(todo))
+        deps = [p for p in new if p not in todo]
+        action = f"installed package {' '.join(todo)}" + (f" (+{len(deps)} dependencies)" if deps else "")
+        return [RollbackEntry(action=action, undo=[["apt-get", "purge", "-y", *new]])]
     elif distro.is_rhel_family():
-        cmd = ["dnf", "install", "-y", pkg]
-        undo = [["dnf", "remove", "-y", pkg]]
+        cmd = ["dnf", "install", "-y", *todo]
+        undo = [["dnf", "remove", "-y", *todo]]
     else:
         return []
-    try:
-        r = subprocess.run(
-            cmd, capture_output=True, text=True,
-            env=_build_env(), timeout=_PKG_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"{' '.join(cmd)} timed out after {_PKG_TIMEOUT}s")
-    if r.returncode != 0:
-        raise RuntimeError(f"{' '.join(cmd)} failed: {r.stderr.strip()}")
-    return [RollbackEntry(action=f"installed package {pkg}", undo=undo)]
+    _run(cmd)
+    return [RollbackEntry(action=f"installed package {' '.join(todo)}", undo=undo)]
 
 
 def remove(pkg: str) -> list[RollbackEntry]:
@@ -113,20 +177,12 @@ def remove(pkg: str) -> list[RollbackEntry]:
     if not is_installed(pkg):
         return []
     if distro.is_debian_family():
-        cmd = ["apt-get", "remove", "-y", pkg]
+        cmd = ["apt-get", *_APT_OPTS, "remove", "-y", pkg]
         undo = [["apt-get", "install", "-y", pkg]]
     elif distro.is_rhel_family():
         cmd = ["dnf", "remove", "-y", pkg]
         undo = [["dnf", "install", "-y", pkg]]
     else:
         return []
-    try:
-        r = subprocess.run(
-            cmd, capture_output=True, text=True,
-            env=_build_env(), timeout=_PKG_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"{' '.join(cmd)} timed out after {_PKG_TIMEOUT}s")
-    if r.returncode != 0:
-        raise RuntimeError(f"{' '.join(cmd)} failed: {r.stderr.strip()}")
+    _run(cmd)
     return [RollbackEntry(action=f"removed package {pkg}", undo=undo)]

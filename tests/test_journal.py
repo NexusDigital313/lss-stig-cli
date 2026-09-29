@@ -45,6 +45,68 @@ class JournalRollbackTests(unittest.TestCase):
         self.assertEqual(rollback.run_rollback(args), 0)
         self.assertEqual(self.target.read_text(), "original\n")
 
+    def test_last_moves_to_previous_run(self):
+        journal.set_current_run_id(None)
+        self.target.write_text("run1\n")
+        journal.write_run("20260101T000000Z-aaaaaaaa", {
+            "V-1": [{"action": "a", "undo": [["true"]], "path": "", "backup": ""}]})
+        journal.write_run("20260102T000000Z-bbbbbbbb", {
+            "V-2": [{"action": "b", "undo": [["true"]], "path": "", "backup": ""}]})
+        last = SimpleNamespace(last=True, run_id=None, rule=None)
+        with mock.patch.object(rollback, "info") as info:
+            rollback.run_rollback(last)
+            rollback.run_rollback(last)
+            self.assertEqual(rollback.run_rollback(last), 0)
+        said = " ".join(str(c) for c in info.call_args_list)
+        self.assertIn("bbbbbbbb", said)
+        self.assertIn("aaaaaaaa", said)
+        self.assertIn("already rolled back", said)
+        self.assertEqual(journal.read_run("20260101T000000Z-aaaaaaaa")["rolled_back"], ["V-1"])
+
+    def test_failed_undo_stays_pending(self):
+        journal.write_run("20260101T000000Z-cccccccc", {
+            "V-1": [{"action": "a", "undo": [["false"]], "path": "", "backup": ""}],
+            "V-2": [{"action": "b", "undo": [["true"]], "path": "", "backup": ""}]})
+        rollback.run_rollback(SimpleNamespace(last=True, run_id=None, rule=None))
+        data = journal.read_run("20260101T000000Z-cccccccc")
+        self.assertEqual(list(journal.pending_controls(data)), ["V-1"])
+
+    def test_locked_audit_rules_regenerate_instead_of_load(self):
+        with mock.patch.object(rollback.auditrules, "immutable", return_value=True), \
+             mock.patch.object(rollback.shutil, "which", return_value="/usr/sbin/augenrules"), \
+             mock.patch("subprocess.run") as run:
+            ok, msg = rollback._run_undo("V-1", ["augenrules", "--load"])
+        self.assertTrue(ok)
+        self.assertEqual(run.call_args[0][0], ["augenrules"])
+
+    def test_no_edit_warning_for_harden_own_changes(self):
+        run_id = journal.new_run_id()
+        journal.set_current_run_id(run_id)
+        b1 = journal.backup_file(str(self.target))
+        self.target.write_text("after rule 1\n")
+        b2 = journal.backup_file(str(self.target))
+        self.target.write_text("after rule 2\n")
+        journal.write_run(run_id, {
+            "V-1": [{"action": "a", "undo": [], "path": str(self.target), "backup": b1}],
+            "V-2": [{"action": "b", "undo": [], "path": str(self.target), "backup": b2}],
+        })
+        with mock.patch.object(rollback, "warn") as warn:
+            rollback.run_rollback(SimpleNamespace(last=True, run_id=None, rule=None))
+        warn.assert_not_called()
+
+    def test_restore_into_removed_dir_is_skipped(self):
+        b = Path(self.tmp.name) / "bkp"
+        b.write_text("x")
+        ok, msg = rollback._restore_backup("V-1", str(b), str(Path(self.tmp.name) / "gone" / "f"))
+        self.assertTrue(ok)
+        self.assertIn("no longer exists", msg)
+
+    def test_statoverride_remove_is_idempotent(self):
+        err = rollback.subprocess.CalledProcessError(2, [], stderr="dpkg-statoverride: warning: no override present\n")
+        with mock.patch("subprocess.run", side_effect=err):
+            ok, _ = rollback._run_undo("V-1", ["dpkg-statoverride", "--remove", "/usr/bin/journalctl"])
+        self.assertTrue(ok)
+
     def test_rejects_malformed_run_id(self):
         args = SimpleNamespace(last=False, run_id="../../etc/passwd", rule=None)
         self.assertEqual(rollback.run_rollback(args), 1)

@@ -18,10 +18,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from functools import lru_cache
-from pathlib import Path
+from importlib import resources
 from typing import Callable
 
-BENCHMARK_DIR = Path(__file__).resolve().parent.parent / "benchmarks"
 
 # DISA severity → Category. CAT I = direct path to compromise.
 CATEGORY = {"high": "CAT I", "medium": "CAT II", "low": "CAT III"}
@@ -95,7 +94,9 @@ _SHORT_NAMES = {"ubuntu2404_v1r6": "Ubuntu 24.04"}
 
 @lru_cache(maxsize=None)
 def load_benchmark(key: str) -> Benchmark:
-    data = json.loads((BENCHMARK_DIR / f"{key}.json").read_text())
+    # importlib.resources, not __file__: the single-file .pyz build reads this from inside a zip.
+    # Resolved here, not at import time: lss_stig.benchmarks imports this module.
+    data = json.loads((resources.files("lss_stig.benchmarks") / f"{key}.json").read_text(encoding="utf-8"))
     rules = [
         Rule(
             vuln_id=r["group_id"],
@@ -147,7 +148,7 @@ def get_control(benchmark: str, vuln_id: str) -> Control | None:
 
 
 def select_rules(bench: Benchmark, ids: list[str] | None = None,
-                 categories: list[str] | None = None) -> list[Rule]:
+                 categories: list[str] | None = None, skip: list[str] | None = None) -> list[Rule]:
     """Filter rules by any ID form (V-ID, SV rule ID, or UBTU STIG ID) and/or
     category ("I", "II", "III"). Raises ValueError on an unknown ID so a typo
     never silently audits nothing."""
@@ -169,4 +170,7 @@ def select_rules(bench: Benchmark, ids: list[str] | None = None,
             picked.append(r)
         keep = {r.vuln_id for r in picked}
         rules = [r for r in rules if r.vuln_id in keep]
+    if skip:
+        drop = {r.vuln_id for r in select_rules(bench, skip)}
+        rules = [r for r in rules if r.vuln_id not in drop]
     return rules

@@ -1,7 +1,7 @@
 import unittest
 
 from lss_stig.controls.ubuntu2404.auth import blank_password_accounts, strip_nullok
-from lss_stig.controls.ubuntu2404.boot import logout_value
+from lss_stig.lib.dconf import parse_value
 from lss_stig.lib.sshd import parse_occurrences
 
 
@@ -45,8 +45,9 @@ class DconfTests(unittest.TestCase):
     def test_logout_value_scoped_to_section(self):
         text = ("[org/gnome/other]\nlogout='x'\n"
                 "[org/gnome/settings-daemon/plugins/media-keys]\nlogout=@as []\n")
-        self.assertEqual(logout_value(text), "@as []")
-        self.assertIsNone(logout_value("[org/gnome/other]\nlogout='x'\n"))
+        sec = "org/gnome/settings-daemon/plugins/media-keys"
+        self.assertEqual(parse_value(text, sec, "logout"), "@as []")
+        self.assertIsNone(parse_value("[org/gnome/other]\nlogout='x'\n", sec, "logout"))
 
 
 if __name__ == "__main__":
