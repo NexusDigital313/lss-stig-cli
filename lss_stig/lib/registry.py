@@ -18,10 +18,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from functools import lru_cache
-from pathlib import Path
+from importlib import resources
 from typing import Callable
 
-BENCHMARK_DIR = Path(__file__).resolve().parent.parent / "benchmarks"
 
 # DISA severity → Category. CAT I = direct path to compromise.
 CATEGORY = {"high": "CAT I", "medium": "CAT II", "low": "CAT III"}
@@ -95,7 +94,9 @@ _SHORT_NAMES = {"ubuntu2404_v1r6": "Ubuntu 24.04"}
 
 @lru_cache(maxsize=None)
 def load_benchmark(key: str) -> Benchmark:
-    data = json.loads((BENCHMARK_DIR / f"{key}.json").read_text())
+    # importlib.resources, not __file__: the single-file .pyz build reads this from inside a zip.
+    # Resolved here, not at import time: lss_stig.benchmarks imports this module.
+    data = json.loads((resources.files("lss_stig.benchmarks") / f"{key}.json").read_text(encoding="utf-8"))
     rules = [
         Rule(
             vuln_id=r["group_id"],

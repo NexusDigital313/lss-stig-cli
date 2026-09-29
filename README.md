@@ -35,11 +35,33 @@ stay open with the exact command to run — nothing is guessed.
 
 ## Install
 
-No third-party dependencies (built for air-gapped hosts). Python ≥ 3.10.
+No third-party dependencies, built for air-gapped hosts. Needs Python 3.10 or
+newer (Ubuntu 24.04 ships 3.12).
+
+Copy the release files to the host, then check them before installing:
 
 ```bash
-pip install .            # or: pipx install .
+sha256sum -c SHA256SUMS
 ```
+
+**Debian package** (recommended):
+
+```bash
+sudo apt install ./lss-stig_1.0.0_all.deb     # or: sudo dpkg -i lss-stig_1.0.0_all.deb
+lss-stig --version
+```
+
+Remove with `sudo apt remove lss-stig`. The journal (`/var/log/lss-stig`),
+license and site values (`/etc/lss-stig`) are kept, so a later install can
+still roll back earlier runs.
+
+**Single file**, no install:
+
+```bash
+sudo python3 lss-stig-1.0.0.pyz audit
+```
+
+**From source**: `pip install .` (or `pipx install .`).
 
 ## Use
 
@@ -152,6 +174,17 @@ then review the diff against the previous catalog and move the controls over.
 ```bash
 python3 -m unittest discover -s tests
 ```
+
+### Building a release
+
+```bash
+tools/build_bundle.py            # dist/: .deb, .pyz, SHA256SUMS
+tools/build_bundle.py --owner    # dist/owner/: unlicensed build for your own test media
+```
+
+Needs Python 3.11+ and `dpkg-deb` (Debian/Ubuntu); `--no-deb` skips the
+package. Owner builds have the license gate off, say UNLICENSED in their file
+names and banner, and must never be published.
 
 ### Issuing licenses (vendor)
 

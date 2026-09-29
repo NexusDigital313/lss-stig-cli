@@ -1,4 +1,5 @@
 # Build edition. Release builds ship "commercial" (license gate on).
-# Set it to "owner" by hand only for the copyright holder's own test media;
-# never publish an owner build.
+# `tools/build_bundle.py --owner` writes "owner" into its own staged copy for
+# the copyright holder's test media; this file always stays "commercial".
+# Never publish an owner build.
 EDITION = "commercial"
