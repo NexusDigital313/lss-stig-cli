@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -68,8 +69,13 @@ def _stage_package(dest: Path, owner: bool) -> None:
 
 
 def _maintainer() -> str:
-    import tomllib
-    author = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["authors"][0]
+    text = (ROOT / "pyproject.toml").read_text()
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10: no tomllib; read the authors line directly
+        m = re.search(r'authors\s*=\s*\[\s*\{\s*name\s*=\s*"([^"]+)"\s*,\s*email\s*=\s*"([^"]+)"', text)
+        return f"{m.group(1)} <{m.group(2)}>"
+    author = tomllib.loads(text)["project"]["authors"][0]
     return f"{author['name']} <{author['email']}>"
 
 
