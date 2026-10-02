@@ -1,0 +1,57 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: unit (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 = floor from pyproject; 3.12 = Ubuntu 24.04 system python3.
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m unittest discover -s tests -v
+
+  bundle:
+    name: release bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs: unit
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Licensed build only. Never build --owner (unlicensed) in CI.
+      - run: python3 tools/build_bundle.py
+      - name: Verify bundle
+        working-directory: dist
+        run: |
+          sha256sum -c SHA256SUMS
+          dpkg-deb -I lss-stig_*_all.deb
+          python3 lss-stig-*.pyz --version
+          # Root check precedes the gate; the gate exits 3 before any change.
+          set +e
+          sudo python3 lss-stig-*.pyz harden --confirm >/dev/null 2>&1
+          rc=$?
+          set -e
+          test "$rc" -eq 3 || { echo "license gate: expected exit 3, got $rc"; exit 1; }
